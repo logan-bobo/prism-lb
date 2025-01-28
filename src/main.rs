@@ -1,17 +1,40 @@
 use std::{
     io::{prelude::*, BufReader},
-    net::{TcpListener, TcpStream},
+    net::{IpAddr, TcpListener, TcpStream},
+    str::FromStr,
 };
 
-fn handle_connection(stream: TcpStream) {
-    let buf_reader = BufReader::new(&stream);
-    let http_request: Vec<_> = buf_reader
-        .lines()
-        .map(|result| result.unwrap())
-        .take_while(|line| !line.is_empty())
-        .collect();
+use reqwest::{Method, Request, Url};
 
-    println!("Request: {http_request:#?}");
+#[derive(Debug)]
+struct Message {
+    method: Method,
+    path: String,
+    host: IpAddr,
+    port: String,
+}
+
+fn produce_message_from_stream(stream: TcpStream) -> Message {
+    let mut buf_reader = BufReader::new(&stream).lines();
+    let request_line = buf_reader.next().unwrap().unwrap();
+    let host_line = buf_reader.next().unwrap().unwrap();
+
+    let request: Vec<&str> = request_line.split(" ").collect();
+    let host_and_port: Vec<&str> = host_line.split(" ").collect();
+    let addr = host_and_port[1];
+    let addr_parts: Vec<&str> = addr.split(":").collect();
+
+    let method = Method::from_str(request[0]).expect("could not parse string to method");
+    let path = request[1].to_string();
+    let host = IpAddr::from_str(addr_parts[0]).expect("could not parse IpAddr");
+    let port = addr_parts[1].to_string();
+
+    Message {
+        method,
+        path,
+        host,
+        port,
+    }
 }
 
 fn main() {
@@ -22,6 +45,8 @@ fn main() {
     for stream in listener.incoming() {
         let stream = stream.unwrap();
 
-        handle_connection(stream);
+        let message = produce_message_from_stream(stream);
+
+        println!("{:?}", message);
     }
 }
