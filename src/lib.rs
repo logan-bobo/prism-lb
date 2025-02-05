@@ -1,21 +1,21 @@
-use std::{fmt::Display, net::IpAddr, ops::Index, str::FromStr};
+use std::{fmt::Display, net::IpAddr, sync::Arc};
 
 use hyper::{
     body::{Buf, Bytes},
-    {Method, Request, Response, StatusCode, Uri},
+    {Request, Response, StatusCode, Uri},
 };
 use hyper_util::rt::TokioIo;
 
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
+    sync::RwLock,
 };
 
 use http_body_util::{BodyExt, Empty, Full};
 
 #[derive(Debug)]
 struct ForwardMessage {
-    method: Method,
     path: String,
     host: IpAddr,
     port: u32,
@@ -24,25 +24,23 @@ struct ForwardMessage {
 // TODO: In the future it is a good idea to to a from implementation
 // but we dont even know if this is the correct choice yet so lets leave
 // for now.
-async fn produce_message_from_stream(stream: &mut TcpStream) -> ForwardMessage {
+async fn produce_message_from_stream(
+    stream: &mut TcpStream,
+    downstream_server: Arc<RwLock<Backend>>,
+) -> ForwardMessage {
     let mut buf_reader = BufReader::new(stream).lines();
     let request_line = buf_reader.next_line().await.unwrap().unwrap();
 
     let request: Vec<&str> = request_line.split(" ").collect();
 
-    let method = Method::from_str(request[0]).expect("could not parse string to method"); // TODO:
-                                                                                          // handle error
     let path = request[1].to_string();
 
-    // for now there is no dyanmic back ends for the LB so just hard code to validate
-    let host = IpAddr::from_str("127.0.0.1").expect("wrong host"); // TODO: handle error
-    let port = 5002;
+    let backend_data = downstream_server.read().await;
 
     ForwardMessage {
-        method,
         path,
-        host,
-        port,
+        host: backend_data.ipaddr,
+        port: backend_data.port,
     }
 }
 
@@ -65,7 +63,7 @@ async fn call_downstream_server(
     uri: Uri,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     let host = uri.host().expect("uri has no host");
-    let port = uri.port_u16().unwrap_or(5002);
+    let port = uri.port_u16().unwrap();
 
     let address = format!("{}:{}", host, port);
 
@@ -126,8 +124,8 @@ async fn respond_to_client(bytes: Vec<u8>, mut stream: TcpStream) {
         .unwrap();
 }
 
-pub async fn process_stream(mut stream: TcpStream, downstream_server: String) {
-    let message = produce_message_from_stream(&mut stream).await;
+pub async fn process_stream(mut stream: TcpStream, downstream_server: Arc<RwLock<Backend>>) {
+    let message = produce_message_from_stream(&mut stream, downstream_server).await;
 
     println!("{:?}", message);
 
@@ -138,14 +136,15 @@ pub async fn process_stream(mut stream: TcpStream, downstream_server: String) {
     respond_to_client(downstream_response_bytes, stream).await;
 }
 
+#[derive(Debug)]
 pub struct Server {
     listener: TcpListener,
-    backends: Vec<Backend>,
+    backends: Vec<Arc<RwLock<Backend>>>,
     count: usize,
 }
 
 impl Server {
-    pub async fn new(listener: TcpListener, backends: Vec<Backend>) -> Self {
+    pub async fn new(listener: TcpListener, backends: Vec<Arc<RwLock<Backend>>>) -> Self {
         Self {
             listener,
             backends,
@@ -158,7 +157,7 @@ impl Server {
             let (stream, _) = self.listener.accept().await.unwrap();
 
             let backend = self.next_server_address();
-            println!("{}", backend);
+            println!("{:?}", backend);
             println!("{}", self.count);
 
             tokio::spawn(async move {
@@ -167,15 +166,15 @@ impl Server {
         }
     }
 
-    fn next_server_address(&mut self) -> String {
+    fn next_server_address(&mut self) -> Arc<RwLock<Backend>> {
         if self.count == self.backends.len() {
             self.reset_count();
         };
 
-        let backend = self.backends.get(self.count).unwrap().to_string();
+        let backend = self.backends.get(self.count).unwrap();
         self.count += 1;
 
-        backend
+        backend.clone()
     }
 
     fn reset_count(&mut self) {
@@ -183,6 +182,7 @@ impl Server {
     }
 }
 
+#[derive(Debug)]
 pub struct Backend {
     ipaddr: IpAddr,
     port: u32,
