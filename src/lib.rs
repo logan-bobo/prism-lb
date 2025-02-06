@@ -2,7 +2,7 @@ use std::{fmt::Display, net::IpAddr, sync::Arc};
 
 use hyper::{
     body::{Buf, Bytes},
-    {Request, Response, StatusCode, Uri},
+    Request, Response, StatusCode, Uri,
 };
 use hyper_util::rt::TokioIo;
 
@@ -21,15 +21,19 @@ struct ForwardMessage {
     port: u32,
 }
 
-// TODO: In the future it is a good idea to to a from implementation
-// but we dont even know if this is the correct choice yet so lets leave
-// for now.
 async fn produce_message_from_stream(
     stream: &mut TcpStream,
     downstream_server: Arc<RwLock<Backend>>,
-) -> ForwardMessage {
+) -> Result<ForwardMessage, Box<dyn std::error::Error>> {
     let mut buf_reader = BufReader::new(stream).lines();
-    let request_line = buf_reader.next_line().await.unwrap().unwrap();
+    let read_request_line = buf_reader.next_line().await?;
+
+    let request_line = match read_request_line {
+        Some(value) => value,
+        None => {
+            return Err("TCP stream contained no data".into());
+        }
+    };
 
     let request: Vec<&str> = request_line.split(" ").collect();
 
@@ -37,33 +41,36 @@ async fn produce_message_from_stream(
 
     let backend_data = downstream_server.read().await;
 
-    ForwardMessage {
+    Ok(ForwardMessage {
         path,
         host: backend_data.ipaddr,
         port: backend_data.port,
-    }
+    })
 }
 
-async fn build_uri_from_message(message: ForwardMessage) -> Uri {
-    let url = Uri::builder()
+async fn build_uri_from_message(message: ForwardMessage) -> Result<Uri, hyper::http::Error> {
+    Uri::builder()
         .scheme("http")
-        .authority(format!(
-            "{}:{}",
-            message.host.to_string(),
-            message.port.to_string()
-        ))
+        .authority(format!("{}:{}", message.host, message.port))
         .path_and_query(message.path)
         .build()
-        .unwrap(); // TODO: handle error
-
-    url
 }
 
-async fn call_downstream_server(
-    uri: Uri,
-) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    let host = uri.host().expect("uri has no host");
-    let port = uri.port_u16().unwrap();
+async fn call_downstream_server(uri: Uri) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let host = match uri.host() {
+        Some(value) => value,
+        None => return Err("empty host in URI".into()),
+    };
+
+    let port = match uri.port_u16() {
+        Some(value) => value,
+        None => return Err("empty port in URI".into()),
+    };
+
+    let authority = match uri.authority() {
+        Some(value) => value.clone(),
+        None => return Err("empty authority in URI".into()),
+    };
 
     let address = format!("{}:{}", host, port);
 
@@ -74,12 +81,9 @@ async fn call_downstream_server(
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
 
     tokio::task::spawn(async move {
-        if let Err(err) = conn.await {
-            println!("Connection failed: {:?}", err);
-        }
+        conn.await?;
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     });
-
-    let authority = uri.authority().unwrap().clone();
 
     let req = Request::builder()
         .uri(uri)
@@ -102,14 +106,16 @@ async fn call_downstream_server(
     Ok(response_bytes)
 }
 
-async fn respond_to_client(bytes: Vec<u8>, mut stream: TcpStream) {
+async fn respond_to_client(
+    bytes: Vec<u8>,
+    mut stream: TcpStream,
+) -> Result<(), Box<dyn std::error::Error>> {
     let response = Response::builder()
         .version(hyper::Version::HTTP_11)
         .status(StatusCode::OK)
         .header("Content-Type", "text/plain")
         .header("Content-Length", bytes.len())
-        .body(Full::new(Bytes::from(bytes.clone())))
-        .unwrap();
+        .body(Full::new(Bytes::from(bytes.clone())))?;
 
     let headers = format!(
         "HTTP/1.1 {}\r\n{:?}\r\n\r\n",
@@ -117,23 +123,27 @@ async fn respond_to_client(bytes: Vec<u8>, mut stream: TcpStream) {
         response.headers()
     );
 
-    stream.write_all(headers.as_bytes()).await.unwrap();
+    stream.write_all(headers.as_bytes()).await?;
     stream
-        .write_all(&response.collect().await.unwrap().to_bytes())
-        .await
-        .unwrap();
+        .write_all(&response.collect().await?.to_bytes())
+        .await?;
+
+    Ok(())
 }
 
-pub async fn process_stream(mut stream: TcpStream, downstream_server: Arc<RwLock<Backend>>) {
-    let message = produce_message_from_stream(&mut stream, downstream_server).await;
+pub async fn process_stream(
+    mut stream: TcpStream,
+    downstream_server: Arc<RwLock<Backend>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let message = produce_message_from_stream(&mut stream, downstream_server).await?;
 
-    println!("{:?}", message);
+    let uri = build_uri_from_message(message).await?;
 
-    let uri = build_uri_from_message(message).await;
+    let downstream_response_bytes = call_downstream_server(uri).await?;
 
-    let downstream_response_bytes = call_downstream_server(uri).await.unwrap();
+    respond_to_client(downstream_response_bytes, stream).await?;
 
-    respond_to_client(downstream_response_bytes, stream).await;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -154,14 +164,17 @@ impl Server {
 
     pub async fn serve(&mut self) {
         loop {
+            // this should fail if we cant allow incoming connections on a listener
             let (stream, _) = self.listener.accept().await.unwrap();
 
             let backend = self.next_server_address();
-            println!("{:?}", backend);
-            println!("{}", self.count);
 
             tokio::spawn(async move {
-                process_stream(stream, backend).await;
+                if let Err(err) = process_stream(stream, backend).await {
+                    // How do I safley log why the stream could not be processed
+                    // log it then safley close the thread?
+                    panic!("Could not process stream with err: {}", err)
+                }
             });
         }
     }
