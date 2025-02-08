@@ -29,7 +29,16 @@ async fn main() {
 
     let backends = vec![backend_one, backend_two, backend_three];
 
+    println!("starting lb...");
+    println!("backends: {:?}", backends);
+    println!("port: 5001");
+
+    // TODO: make the algo configurable
+    println!("algorithm: round robin");
+
     let mut server = Server::new(listener, backends).await;
 
-    server.serve().await;
+    if let Err(error) = server.serve().await {
+        println!("{error}");
+    };
 }

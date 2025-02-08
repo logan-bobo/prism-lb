@@ -49,11 +49,15 @@ async fn produce_message_from_stream(
 }
 
 async fn build_uri_from_message(message: ForwardMessage) -> Result<Uri, hyper::http::Error> {
-    Uri::builder()
+    let uri = Uri::builder()
         .scheme("http")
         .authority(format!("{}:{}", message.host, message.port))
         .path_and_query(message.path)
-        .build()
+        .build();
+
+    println!("uri constructed: {:?}", uri);
+
+    uri
 }
 
 async fn call_downstream_server(uri: Uri) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -76,6 +80,8 @@ async fn call_downstream_server(uri: Uri) -> Result<Vec<u8>, Box<dyn std::error:
 
     let stream = TcpStream::connect(address).await?;
 
+    println!("tcp connection established to downstream server");
+
     let io = TokioIo::new(stream);
 
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
@@ -91,6 +97,8 @@ async fn call_downstream_server(uri: Uri) -> Result<Vec<u8>, Box<dyn std::error:
         .body(Empty::<Bytes>::new())?;
 
     let mut res = sender.send_request(req).await?;
+
+    println!("downstream request successful");
 
     let mut response_bytes: Vec<u8> = Vec::new();
 
@@ -117,6 +125,8 @@ async fn respond_to_client(
         .header("Content-Length", bytes.len())
         .body(Full::new(Bytes::from(bytes.clone())))?;
 
+    println!("responding to client with data");
+
     let headers = format!(
         "HTTP/1.1 {}\r\n{:?}\r\n\r\n",
         response.status(),
@@ -127,6 +137,8 @@ async fn respond_to_client(
     stream
         .write_all(&response.collect().await?.to_bytes())
         .await?;
+
+    println!("data written back to client via tcp stream");
 
     Ok(())
 }
@@ -162,18 +174,15 @@ impl Server {
         }
     }
 
-    pub async fn serve(&mut self) {
+    pub async fn serve(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
-            // this should fail if we cant allow incoming connections on a listener
-            let (stream, _) = self.listener.accept().await.unwrap();
+            let (stream, _) = self.listener.accept().await?;
 
             let backend = self.next_server_address();
 
             tokio::spawn(async move {
                 if let Err(err) = process_stream(stream, backend).await {
-                    // How do I safley log why the stream could not be processed
-                    // log it then safley close the thread?
-                    panic!("Could not process stream with err: {}", err)
+                    println!("Could not process stream with err: {}", err)
                 }
             });
         }
