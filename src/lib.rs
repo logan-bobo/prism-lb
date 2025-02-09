@@ -14,6 +14,8 @@ use tokio::{
 
 use http_body_util::{BodyExt, Empty, Full};
 
+use log::{debug, error, info};
+
 #[derive(Debug)]
 struct ForwardMessage {
     path: String,
@@ -55,12 +57,13 @@ async fn build_uri_from_message(message: ForwardMessage) -> Result<Uri, hyper::h
         .path_and_query(message.path)
         .build();
 
-    println!("uri constructed: {:?}", uri);
+    debug!("uri constructed: {:?}", uri);
 
     uri
 }
 
 async fn call_downstream_server(uri: Uri) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    info!("calling downstream bakend: {:?}", uri);
     let host = match uri.host() {
         Some(value) => value,
         None => return Err("empty host in URI".into()),
@@ -80,7 +83,7 @@ async fn call_downstream_server(uri: Uri) -> Result<Vec<u8>, Box<dyn std::error:
 
     let stream = TcpStream::connect(address).await?;
 
-    println!("tcp connection established to downstream server");
+    debug!("tcp connection established to downstream server");
 
     let io = TokioIo::new(stream);
 
@@ -98,7 +101,7 @@ async fn call_downstream_server(uri: Uri) -> Result<Vec<u8>, Box<dyn std::error:
 
     let mut res = sender.send_request(req).await?;
 
-    println!("downstream request successful");
+    debug!("downstream request successful");
 
     let mut response_bytes: Vec<u8> = Vec::new();
 
@@ -125,8 +128,6 @@ async fn respond_to_client(
         .header("Content-Length", bytes.len())
         .body(Full::new(Bytes::from(bytes.clone())))?;
 
-    println!("responding to client with data");
-
     let headers = format!(
         "HTTP/1.1 {}\r\n{:?}\r\n\r\n",
         response.status(),
@@ -138,7 +139,9 @@ async fn respond_to_client(
         .write_all(&response.collect().await?.to_bytes())
         .await?;
 
-    println!("data written back to client via tcp stream");
+    info!("data written back to client via tcp stream");
+
+    stream.shutdown().await?;
 
     Ok(())
 }
@@ -182,7 +185,7 @@ impl Server {
 
             tokio::spawn(async move {
                 if let Err(err) = process_stream(stream, backend).await {
-                    println!("Could not process stream with err: {}", err)
+                    error!("Could not process stream with err: {}", err)
                 }
             });
         }
