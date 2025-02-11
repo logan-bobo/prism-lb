@@ -1,9 +1,10 @@
-use std::net::IpAddr;
-use std::str::FromStr;
 use std::sync::Arc;
 
+use prism_lb::parser::Config;
 use prism_lb::{Backend, Server};
 
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
@@ -13,22 +14,39 @@ use log::{error, info};
 async fn main() {
     env_logger::init();
 
-    let listener = TcpListener::bind("127.0.0.1:5001").await.unwrap();
+    let mut file = File::open("backends.yaml")
+        .await
+        .expect("Could not open config file, please ensure `backends.yaml exists");
 
-    // Static for now but will be dynamic from yaml later there will be a module that can generate
-    // backends
-    let backend_one = Arc::new(RwLock::new(Backend::new(
-        IpAddr::from_str("127.0.0.1").unwrap(),
-        5004,
-    )));
-    let backend_two = Arc::new(RwLock::new(Backend::new(
-        IpAddr::from_str("127.0.0.1").unwrap(),
-        5003,
-    )));
+    let mut contents = String::new();
 
-    let backends = vec![backend_one, backend_two];
+    file.read_to_string(&mut contents)
+        .await
+        .expect("Could not process config");
 
-    info!("starting lb... \nbackends :{:?} \nport: 5001", backends);
+    let config: Config =
+        Config::try_from(contents).expect("Could not build intenral Config from config file");
+
+    let listener = TcpListener::bind(format!(
+        "{}:{}",
+        config.bind_interface(),
+        config.bind_port()
+    ))
+    .await
+    .expect("could not bind to interface/port");
+
+    let mut backends: Vec<Arc<RwLock<Backend>>> = Vec::new();
+
+    config.backends().iter().for_each(|backend| {
+        backends.push(Arc::new(RwLock::new(Backend::new(backend.0, backend.1))))
+    });
+
+    info!(
+        "starting lb... \nbackends :{:?} \ninterface: {:?}\n port: {:?}",
+        backends,
+        config.bind_port(),
+        config.bind_interface()
+    );
 
     let mut server = Server::new(listener, backends).await;
 

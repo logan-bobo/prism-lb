@@ -1,20 +1,20 @@
+pub mod parser;
+
 use std::{fmt::Display, net::IpAddr, sync::Arc};
 
+use http_body_util::{BodyExt, Empty, Full};
 use hyper::{
     body::{Buf, Bytes},
     Request, Response, StatusCode, Uri,
 };
 use hyper_util::rt::TokioIo;
-
+use log::{debug, error, info};
+use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::RwLock,
 };
-
-use http_body_util::{BodyExt, Empty, Full};
-
-use log::{debug, error, info};
 
 #[derive(Debug)]
 struct ForwardMessage {
@@ -207,7 +207,7 @@ impl Server {
     }
 }
 
-#[derive(Debug)]
+#[derive(PartialEq, Serialize, Deserialize, Debug)]
 pub struct Backend {
     ipaddr: IpAddr,
     port: u32,
