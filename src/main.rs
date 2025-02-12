@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use prism_lb::parser::Config;
@@ -38,14 +40,17 @@ async fn main() {
     let mut backends: Vec<Arc<RwLock<Backend>>> = Vec::new();
 
     config.backends().iter().for_each(|backend| {
-        backends.push(Arc::new(RwLock::new(Backend::new(backend.0, backend.1))))
+        backends.push(Arc::new(RwLock::new(Backend::new(
+            IpAddr::from_str(backend.get("host").expect("invalid host")).expect("invalid host"),
+            u32::from_str(backend.get("port").expect("invalid port")).expect("invalid port"),
+        ))))
     });
 
     info!(
-        "starting lb... \nbackends :{:?} \ninterface: {:?}\n port: {:?}",
+        "starting lb... \nbackends: {:?} \ninterface: {:?}\nport: {:?}",
         backends,
-        config.bind_port(),
-        config.bind_interface()
+        config.bind_interface(),
+        config.bind_port()
     );
 
     let mut server = Server::new(listener, backends).await;
