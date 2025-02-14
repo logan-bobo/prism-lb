@@ -1,6 +1,13 @@
 pub mod parser;
 
-use std::{fmt::Display, net::IpAddr, sync::Arc};
+use std::{
+    fmt::Display,
+    net::IpAddr,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::{
@@ -165,7 +172,7 @@ pub async fn process_stream(
 pub struct Server {
     listener: TcpListener,
     backends: Vec<Arc<RwLock<Backend>>>,
-    count: usize,
+    count: AtomicUsize,
 }
 
 impl Server {
@@ -173,7 +180,7 @@ impl Server {
         Self {
             listener,
             backends,
-            count: 0,
+            count: AtomicUsize::new(0),
         }
     }
 
@@ -191,19 +198,23 @@ impl Server {
         }
     }
 
-    fn next_server_address(&mut self) -> Arc<RwLock<Backend>> {
-        if self.count == self.backends.len() {
+    fn next_server_address(&self) -> Arc<RwLock<Backend>> {
+        if self.count.load(Ordering::SeqCst) == self.backends.len() {
             self.reset_count();
         };
 
-        let backend = self.backends.get(self.count).unwrap();
-        self.count += 1;
+        let backend = self
+            .backends
+            .get(self.count.load(Ordering::SeqCst))
+            .unwrap();
+
+        self.count.fetch_add(1, Ordering::SeqCst);
 
         backend.clone()
     }
 
-    fn reset_count(&mut self) {
-        self.count = 0;
+    fn reset_count(&self) {
+        self.count.store(0, Ordering::SeqCst);
     }
 }
 
