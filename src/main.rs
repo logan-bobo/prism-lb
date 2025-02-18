@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use prism_lb::parser::Config;
-use prism_lb::{Backend, Server};
+use prism_lb::{Backend, HealthCheck, Server};
 
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -18,7 +18,7 @@ async fn main() {
 
     let mut file = File::open("backends.yaml")
         .await
-        .expect("Could not open config file, please ensure `backends.yaml exists");
+        .expect("Could not open config file, please ensure `backends.yaml` exists");
 
     let mut contents = String::new();
 
@@ -27,7 +27,7 @@ async fn main() {
         .expect("Could not process config");
 
     let config: Config =
-        Config::try_from(contents).expect("Could not build intenral Config from config file");
+        Config::try_from(contents).expect("Could not build internal Config from config file");
 
     let listener = TcpListener::bind(format!(
         "{}:{}",
@@ -43,17 +43,19 @@ async fn main() {
         backends.push(Arc::new(RwLock::new(Backend::new(
             IpAddr::from_str(backend.get("host").expect("invalid host")).expect("invalid host"),
             u32::from_str(backend.get("port").expect("invalid port")).expect("invalid port"),
+            // Just to get the health check up and running...
+            String::from("/"),
         ))))
     });
 
     info!(
-        "starting lb... \nbackends: {:?} \ninterface: {:?}\nport: {:?}",
+        "starting lb... \nbackends: {:?}\ninterface: {:?}\nport: {:?}",
         backends,
         config.bind_interface(),
         config.bind_port()
     );
 
-    let mut server = Server::new(listener, backends).await;
+    let server = Server::new(listener, backends, *config.health_check()).await;
 
     if let Err(error) = server.serve().await {
         error!("{error}");

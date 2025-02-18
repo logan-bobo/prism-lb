@@ -12,9 +12,9 @@ pub struct Config {
     health_check: HealthCheck,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Getters)]
 #[serde(rename_all = "camelCase")]
-struct HealthCheck {
+pub struct HealthCheck {
     interval: u32,
     failure_threshold: u32,
 }

@@ -226,26 +226,23 @@ impl Server {
     }
 
     async fn backend_health_check(&self) -> Vec<Arc<RwLock<Backend>>> {
-        let mut new_healthy_backends = Vec::new();
+        let new_healthy_backends = Vec::new();
 
-        for value in self.backends.iter() {
+        for (idx, value) in self.backends.iter().enumerate() {
             let read_backend = value.read().await;
 
-            if !read_backend.is_healthy().await {
-                let mut write_backend = value.write().await;
-
-                write_backend.health_failures += 1;
-            };
-
-            if read_backend.health_failures >= *self.health_check.failure_threshold() {
+            if read_backend.is_healthy() {
                 continue;
             };
 
-            new_healthy_backends.push(Arc::new(RwLock::new(Backend::new(
-                read_backend.ipaddr,
-                read_backend.port,
-                read_backend.health_path.clone(),
-            ))));
+            let mut write_backend = value.write().await;
+
+            write_backend.health_failures += 1;
+            
+            // TODO: YOU ARE HERE, YOU NEED TO FILTER OUR ALL OF THE DEAD BACKENDS!
+            if write_backend.health_failures < *self.health_check.failure_threshold() {
+                new_healthy_backends.push(Arc::new(write_backend.downgrade()));
+            }
         }
 
         new_healthy_backends
@@ -271,48 +268,8 @@ impl Backend {
         }
     }
 
-    async fn is_healthy(&self) -> bool {
-        let address = format!("{}:{}", self.ipaddr, self.port);
-
-        let uri = Uri::builder()
-            .scheme("http")
-            .authority(address)
-            .path_and_query(self.health_path.clone())
-            .build()
-            .unwrap();
-
-        let stream = match TcpStream::connect(uri.authority().unwrap().to_string()).await {
-            Ok(stream) => stream,
-            Err(_) => return false,
-        };
-
-        let io = TokioIo::new(stream);
-
-        let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
-            Ok((sender, conn)) => (sender, conn),
-            Err(_) => return false,
-        };
-
-        tokio::task::spawn(async move {
-            conn.await?;
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        });
-
-        let req = match Request::builder()
-            .uri(uri.clone())
-            .header(hyper::header::HOST, uri.authority().unwrap().as_str())
-            .body(Empty::<Bytes>::new())
-        {
-            Ok(req) => req,
-            Err(_) => return false,
-        };
-
-        let res = match sender.send_request(req).await {
-            Ok(res) => res,
-            Err(_) => return false,
-        };
-
-        res.status() == StatusCode::OK
+    pub fn is_healthy(&self) -> bool {
+        true
     }
 }
 
