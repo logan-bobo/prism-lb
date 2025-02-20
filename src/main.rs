@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use prism_lb::parser::Config;
-use prism_lb::{Backend, HealthCheck, Server};
+use prism_lb::{Backend, Server};
 
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -42,8 +42,7 @@ async fn main() {
     config.backends().iter().for_each(|backend| {
         backends.push(Arc::new(RwLock::new(Backend::new(
             IpAddr::from_str(backend.get("host").expect("invalid host")).expect("invalid host"),
-            u32::from_str(backend.get("port").expect("invalid port")).expect("invalid port"),
-            // Just to get the health check up and running...
+            u64::from_str(backend.get("port").expect("invalid port")).expect("invalid port"),
             String::from("/"),
         ))))
     });
@@ -55,7 +54,7 @@ async fn main() {
         config.bind_port()
     );
 
-    let server = Server::new(listener, backends, *config.health_check()).await;
+    let server = Arc::new(Server::new(listener, backends, config.health_check).await);
 
     if let Err(error) = server.serve().await {
         error!("{error}");

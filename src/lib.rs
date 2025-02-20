@@ -23,13 +23,14 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::RwLock,
+    time::{interval, Duration},
 };
 
 #[derive(Debug)]
 struct ForwardMessage {
     path: String,
     host: IpAddr,
-    port: u32,
+    port: u64,
 }
 
 async fn produce_message_from_stream(
@@ -173,7 +174,7 @@ pub async fn process_stream(
 #[derive(Debug)]
 pub struct Server {
     listener: TcpListener,
-    backends: Vec<Arc<RwLock<Backend>>>,
+    backends: Arc<RwLock<Vec<Arc<RwLock<Backend>>>>>,
     count: AtomicUsize,
     health_check: HealthCheck,
 }
@@ -186,17 +187,24 @@ impl Server {
     ) -> Self {
         Self {
             listener,
-            backends,
+            backends: Arc::new(RwLock::new(backends)),
             count: AtomicUsize::new(0),
             health_check,
         }
     }
 
-    pub async fn serve(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn serve(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
+        let server_clone = Arc::clone(&self);
+        tokio::spawn(async move {
+            server_clone
+                .health_worker(Duration::new(*server_clone.health_check.interval(), 0))
+                .await;
+        });
+
         loop {
             let (stream, _) = self.listener.accept().await?;
 
-            let backend = self.next_server_address();
+            let backend = self.next_server_address().await;
 
             tokio::spawn(async move {
                 if let Err(err) = process_stream(stream, backend).await {
@@ -206,15 +214,14 @@ impl Server {
         }
     }
 
-    fn next_server_address(&self) -> Arc<RwLock<Backend>> {
-        if self.count.load(Ordering::SeqCst) == self.backends.len() {
+    async fn next_server_address(&self) -> Arc<RwLock<Backend>> {
+        let backend_read = self.backends.read().await;
+
+        if self.count.load(Ordering::SeqCst) == backend_read.len() {
             self.reset_count();
         };
 
-        let backend = self
-            .backends
-            .get(self.count.load(Ordering::SeqCst))
-            .unwrap();
+        let backend = backend_read.get(self.count.load(Ordering::SeqCst)).unwrap();
 
         self.count.fetch_add(1, Ordering::SeqCst);
 
@@ -227,42 +234,56 @@ impl Server {
 
     async fn backend_health_check(&self) -> Vec<Arc<RwLock<Backend>>> {
         let mut new_healthy_backends = Vec::new();
+        let backends_read = self.backends.read().await;
 
-        for value in self.backends.iter() {
-            let read_backend = value.read().await;
-
-            if !read_backend.is_healthy().await {
-                let mut write_backend = value.write().await;
-
-                write_backend.health_failures += 1;
+        for value in backends_read.iter() {
+            let is_healthy = {
+                let read_backend = value.read().await;
+                read_backend.is_healthy().await
             };
+
+            if !is_healthy {
+                let mut write_backend = value.write().await;
+                write_backend.health_failures += 1;
+            }
+
+            let read_backend = value.read().await;
 
             if read_backend.health_failures >= *self.health_check.failure_threshold() {
                 continue;
             };
 
-            new_healthy_backends.push(Arc::new(RwLock::new(Backend::new(
-                read_backend.ipaddr,
-                read_backend.port,
-                read_backend.health_path.clone(),
-            ))));
+            new_healthy_backends.push(value.clone());
         }
 
         new_healthy_backends
+    }
+
+    async fn health_worker(&self, interval_duration: Duration) {
+        let mut interval = interval(interval_duration);
+
+        loop {
+            interval.tick().await;
+
+            let healthy_backends = self.backend_health_check().await;
+
+            let mut backend_write = self.backends.write().await;
+            *backend_write = healthy_backends;
+        }
     }
 }
 
 #[derive(PartialEq, Serialize, Deserialize, Debug)]
 pub struct Backend {
     ipaddr: IpAddr,
-    port: u32,
+    port: u64,
     health_path: String,
     #[serde(skip_deserializing)]
-    health_failures: u32,
+    health_failures: u64,
 }
 
 impl Backend {
-    pub fn new(ipaddr: IpAddr, port: u32, health_path: String) -> Self {
+    pub fn new(ipaddr: IpAddr, port: u64, health_path: String) -> Self {
         Self {
             ipaddr,
             port,
