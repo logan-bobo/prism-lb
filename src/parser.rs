@@ -7,16 +7,16 @@ use serde_derive::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     bind_interface: IpAddr,
-    bind_port: u32,
+    bind_port: u16,
     backends: Vec<HashMap<String, String>>,
-    health_check: HealthCheck,
+    pub health_check: HealthCheck,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Getters)]
 #[serde(rename_all = "camelCase")]
-struct HealthCheck {
-    interval: u32,
-    failure_threshold: u32,
+pub struct HealthCheck {
+    pub interval: u64,
+    failure_threshold: usize,
 }
 
 impl TryFrom<String> for Config {

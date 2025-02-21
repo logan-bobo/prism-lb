@@ -1,5 +1,7 @@
 pub mod parser;
 
+use crate::parser::HealthCheck;
+
 use std::{
     fmt::Display,
     net::IpAddr,
@@ -21,18 +23,19 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::RwLock,
+    time::{interval, Duration},
 };
 
 #[derive(Debug)]
 struct ForwardMessage {
     path: String,
     host: IpAddr,
-    port: u32,
+    port: u16,
 }
 
 async fn produce_message_from_stream(
     stream: &mut TcpStream,
-    downstream_server: Arc<RwLock<Backend>>,
+    downstream_server: Arc<Backend>,
 ) -> Result<ForwardMessage, Box<dyn std::error::Error>> {
     let mut buf_reader = BufReader::new(stream).lines();
     let read_request_line = buf_reader.next_line().await?;
@@ -48,12 +51,10 @@ async fn produce_message_from_stream(
 
     let path = request[1].to_string();
 
-    let backend_data = downstream_server.read().await;
-
     Ok(ForwardMessage {
         path,
-        host: backend_data.ipaddr,
-        port: backend_data.port,
+        host: downstream_server.ipaddr,
+        port: downstream_server.port,
     })
 }
 
@@ -155,7 +156,7 @@ async fn respond_to_client(
 
 pub async fn process_stream(
     mut stream: TcpStream,
-    downstream_server: Arc<RwLock<Backend>>,
+    downstream_server: Arc<Backend>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let message = produce_message_from_stream(&mut stream, downstream_server).await?;
 
@@ -171,24 +172,37 @@ pub async fn process_stream(
 #[derive(Debug)]
 pub struct Server {
     listener: TcpListener,
-    backends: Vec<Arc<RwLock<Backend>>>,
+    backends: Arc<RwLock<Vec<Arc<Backend>>>>,
     count: AtomicUsize,
+    health_check: HealthCheck,
 }
 
 impl Server {
-    pub async fn new(listener: TcpListener, backends: Vec<Arc<RwLock<Backend>>>) -> Self {
+    pub async fn new(
+        listener: TcpListener,
+        backends: Vec<Arc<Backend>>,
+        health_check: HealthCheck,
+    ) -> Self {
         Self {
             listener,
-            backends,
+            backends: Arc::new(RwLock::new(backends)),
             count: AtomicUsize::new(0),
+            health_check,
         }
     }
 
-    pub async fn serve(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn serve(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
+        let server_clone = Arc::clone(&self);
+        tokio::spawn(async move {
+            server_clone
+                .health_worker(Duration::new(*server_clone.health_check.interval(), 0))
+                .await;
+        });
+
         loop {
             let (stream, _) = self.listener.accept().await?;
 
-            let backend = self.next_server_address();
+            let backend = self.next_server_address().await;
 
             tokio::spawn(async move {
                 if let Err(err) = process_stream(stream, backend).await {
@@ -198,15 +212,14 @@ impl Server {
         }
     }
 
-    fn next_server_address(&self) -> Arc<RwLock<Backend>> {
-        if self.count.load(Ordering::SeqCst) == self.backends.len() {
+    async fn next_server_address(&self) -> Arc<Backend> {
+        let backend_read = self.backends.read().await;
+
+        if self.count.load(Ordering::SeqCst) == backend_read.len() {
             self.reset_count();
         };
 
-        let backend = self
-            .backends
-            .get(self.count.load(Ordering::SeqCst))
-            .unwrap();
+        let backend = backend_read.get(self.count.load(Ordering::SeqCst)).unwrap();
 
         self.count.fetch_add(1, Ordering::SeqCst);
 
@@ -216,17 +229,110 @@ impl Server {
     fn reset_count(&self) {
         self.count.store(0, Ordering::SeqCst);
     }
+
+    async fn backend_health_check(&self) -> Vec<Arc<Backend>> {
+        let mut new_healthy_backends = Vec::new();
+        let backends_read = self.backends.read().await;
+
+        for value in backends_read.iter() {
+            let is_healthy = { value.is_healthy().await };
+
+            if !is_healthy {
+                value.health_failures.fetch_add(1, Ordering::SeqCst);
+            }
+
+            if value.health_failures.load(Ordering::SeqCst)
+                >= *self.health_check.failure_threshold()
+            {
+                continue;
+            };
+
+            new_healthy_backends.push(value.clone());
+        }
+
+        new_healthy_backends
+    }
+
+    async fn health_worker(&self, interval_duration: Duration) {
+        let mut interval = interval(interval_duration);
+
+        loop {
+            debug!("starting health check");
+
+            interval.tick().await;
+
+            let healthy_backends = self.backend_health_check().await;
+            debug!("new backend pool {:?}", healthy_backends);
+
+            let mut backend_write = self.backends.write().await;
+            *backend_write = healthy_backends;
+
+            debug!("finished health check");
+        }
+    }
 }
 
-#[derive(PartialEq, Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Backend {
     ipaddr: IpAddr,
-    port: u32,
+    port: u16,
+    health_path: String,
+    #[serde(skip_deserializing)]
+    health_failures: AtomicUsize,
 }
 
 impl Backend {
-    pub fn new(ipaddr: IpAddr, port: u32) -> Self {
-        Self { ipaddr, port }
+    pub fn new(ipaddr: IpAddr, port: u16, health_path: String) -> Self {
+        Self {
+            ipaddr,
+            port,
+            health_path,
+            health_failures: AtomicUsize::new(0),
+        }
+    }
+
+    async fn is_healthy(&self) -> bool {
+        let address = format!("{}:{}", self.ipaddr, self.port);
+
+        let uri = Uri::builder()
+            .scheme("http")
+            .authority(address)
+            .path_and_query(self.health_path.clone())
+            .build()
+            .unwrap();
+
+        let stream = match TcpStream::connect(uri.authority().unwrap().to_string()).await {
+            Ok(stream) => stream,
+            Err(_) => return false,
+        };
+
+        let io = TokioIo::new(stream);
+
+        let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
+            Ok((sender, conn)) => (sender, conn),
+            Err(_) => return false,
+        };
+
+        tokio::task::spawn(async move {
+            conn.await?;
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        });
+
+        let req = match Request::builder()
+            .uri(uri.clone())
+            .header(hyper::header::HOST, uri.authority().unwrap().as_str())
+            .body(Empty::<Bytes>::new())
+        {
+            Ok(req) => req,
+            Err(_) => return false,
+        };
+
+        let res = match sender.send_request(req).await {
+            Ok(res) => res,
+            Err(_) => return false,
+        };
+
+        res.status() == StatusCode::OK
     }
 }
 
