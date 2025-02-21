@@ -42,7 +42,7 @@ async fn main() {
     config.backends().iter().for_each(|backend| {
         backends.push(Arc::new(RwLock::new(Backend::new(
             IpAddr::from_str(backend.get("host").expect("invalid host")).expect("invalid host"),
-            u64::from_str(backend.get("port").expect("invalid port")).expect("invalid port"),
+            u16::from_str(backend.get("port").expect("invalid port")).expect("invalid port"),
             String::from("/"),
         ))))
     });

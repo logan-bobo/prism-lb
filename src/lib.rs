@@ -30,7 +30,7 @@ use tokio::{
 struct ForwardMessage {
     path: String,
     host: IpAddr,
-    port: u64,
+    port: u16,
 }
 
 async fn produce_message_from_stream(
@@ -276,14 +276,14 @@ impl Server {
 #[derive(PartialEq, Serialize, Deserialize, Debug)]
 pub struct Backend {
     ipaddr: IpAddr,
-    port: u64,
+    port: u16,
     health_path: String,
     #[serde(skip_deserializing)]
     health_failures: u64,
 }
 
 impl Backend {
-    pub fn new(ipaddr: IpAddr, port: u64, health_path: String) -> Self {
+    pub fn new(ipaddr: IpAddr, port: u16, health_path: String) -> Self {
         Self {
             ipaddr,
             port,

@@ -7,7 +7,7 @@ use serde_derive::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     bind_interface: IpAddr,
-    bind_port: u64,
+    bind_port: u16,
     backends: Vec<HashMap<String, String>>,
     pub health_check: HealthCheck,
 }
