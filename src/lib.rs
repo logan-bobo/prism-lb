@@ -35,7 +35,7 @@ struct ForwardMessage {
 
 async fn produce_message_from_stream(
     stream: &mut TcpStream,
-    downstream_server: Arc<RwLock<Backend>>,
+    downstream_server: Arc<Backend>,
 ) -> Result<ForwardMessage, Box<dyn std::error::Error>> {
     let mut buf_reader = BufReader::new(stream).lines();
     let read_request_line = buf_reader.next_line().await?;
@@ -51,12 +51,10 @@ async fn produce_message_from_stream(
 
     let path = request[1].to_string();
 
-    let backend_data = downstream_server.read().await;
-
     Ok(ForwardMessage {
         path,
-        host: backend_data.ipaddr,
-        port: backend_data.port,
+        host: downstream_server.ipaddr,
+        port: downstream_server.port,
     })
 }
 
@@ -158,7 +156,7 @@ async fn respond_to_client(
 
 pub async fn process_stream(
     mut stream: TcpStream,
-    downstream_server: Arc<RwLock<Backend>>,
+    downstream_server: Arc<Backend>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let message = produce_message_from_stream(&mut stream, downstream_server).await?;
 
@@ -174,7 +172,7 @@ pub async fn process_stream(
 #[derive(Debug)]
 pub struct Server {
     listener: TcpListener,
-    backends: Arc<RwLock<Vec<Arc<RwLock<Backend>>>>>,
+    backends: Arc<RwLock<Vec<Arc<Backend>>>>,
     count: AtomicUsize,
     health_check: HealthCheck,
 }
@@ -182,7 +180,7 @@ pub struct Server {
 impl Server {
     pub async fn new(
         listener: TcpListener,
-        backends: Vec<Arc<RwLock<Backend>>>,
+        backends: Vec<Arc<Backend>>,
         health_check: HealthCheck,
     ) -> Self {
         Self {
@@ -214,7 +212,7 @@ impl Server {
         }
     }
 
-    async fn next_server_address(&self) -> Arc<RwLock<Backend>> {
+    async fn next_server_address(&self) -> Arc<Backend> {
         let backend_read = self.backends.read().await;
 
         if self.count.load(Ordering::SeqCst) == backend_read.len() {
@@ -232,24 +230,20 @@ impl Server {
         self.count.store(0, Ordering::SeqCst);
     }
 
-    async fn backend_health_check(&self) -> Vec<Arc<RwLock<Backend>>> {
+    async fn backend_health_check(&self) -> Vec<Arc<Backend>> {
         let mut new_healthy_backends = Vec::new();
         let backends_read = self.backends.read().await;
 
         for value in backends_read.iter() {
-            let is_healthy = {
-                let read_backend = value.read().await;
-                read_backend.is_healthy().await
-            };
+            let is_healthy = { value.is_healthy().await };
 
             if !is_healthy {
-                let mut write_backend = value.write().await;
-                write_backend.health_failures += 1;
+                value.health_failures.fetch_add(1, Ordering::SeqCst);
             }
 
-            let read_backend = value.read().await;
-
-            if read_backend.health_failures >= *self.health_check.failure_threshold() {
+            if value.health_failures.load(Ordering::SeqCst)
+                >= *self.health_check.failure_threshold()
+            {
                 continue;
             };
 
@@ -263,23 +257,28 @@ impl Server {
         let mut interval = interval(interval_duration);
 
         loop {
+            debug!("starting health check");
+
             interval.tick().await;
 
             let healthy_backends = self.backend_health_check().await;
+            debug!("new backend pool {:?}", healthy_backends);
 
             let mut backend_write = self.backends.write().await;
             *backend_write = healthy_backends;
+
+            debug!("finished health check");
         }
     }
 }
 
-#[derive(PartialEq, Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Backend {
     ipaddr: IpAddr,
     port: u16,
     health_path: String,
     #[serde(skip_deserializing)]
-    health_failures: u64,
+    health_failures: AtomicUsize,
 }
 
 impl Backend {
@@ -288,7 +287,7 @@ impl Backend {
             ipaddr,
             port,
             health_path,
-            health_failures: 0,
+            health_failures: AtomicUsize::new(0),
         }
     }
 

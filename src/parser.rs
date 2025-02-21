@@ -16,7 +16,7 @@ pub struct Config {
 #[serde(rename_all = "camelCase")]
 pub struct HealthCheck {
     pub interval: u64,
-    failure_threshold: u64,
+    failure_threshold: usize,
 }
 
 impl TryFrom<String> for Config {

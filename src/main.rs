@@ -8,7 +8,6 @@ use prism_lb::{Backend, Server};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
-use tokio::sync::RwLock;
 
 use log::{error, info};
 
@@ -37,14 +36,14 @@ async fn main() {
     .await
     .expect("could not bind to interface/port");
 
-    let mut backends: Vec<Arc<RwLock<Backend>>> = Vec::new();
+    let mut backends: Vec<Arc<Backend>> = Vec::new();
 
     config.backends().iter().for_each(|backend| {
-        backends.push(Arc::new(RwLock::new(Backend::new(
+        backends.push(Arc::new(Backend::new(
             IpAddr::from_str(backend.get("host").expect("invalid host")).expect("invalid host"),
             u16::from_str(backend.get("port").expect("invalid port")).expect("invalid port"),
             String::from("/"),
-        ))))
+        )))
     });
 
     info!(
