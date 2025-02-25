@@ -1,8 +1,11 @@
 pub mod parser;
+mod tcp_pool;
 
 use crate::parser::HealthCheck;
+use crate::tcp_pool::TcpPool;
 
 use std::{
+    collections::{HashMap, VecDeque},
     fmt::Display,
     net::IpAddr,
     sync::{
@@ -18,11 +21,11 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use log::{debug, error, info};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
-    sync::RwLock,
+    sync::{Mutex, RwLock},
     time::{interval, Duration},
 };
 
@@ -272,13 +275,15 @@ impl Server {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
 pub struct Backend {
     ipaddr: IpAddr,
     port: u16,
     health_path: String,
     #[serde(skip_deserializing)]
     health_failures: AtomicUsize,
+    #[serde(skip_deserializing)]
+    tcp_pool: Option<TcpPool>,
 }
 
 impl Backend {
@@ -288,10 +293,12 @@ impl Backend {
             port,
             health_path,
             health_failures: AtomicUsize::new(0),
+            tcp_pool: None,
         }
     }
 
     async fn is_healthy(&self) -> bool {
+        // This whole function should take use of the tcp pool on the backend
         let address = format!("{}:{}", self.ipaddr, self.port);
 
         let uri = Uri::builder()
@@ -333,6 +340,25 @@ impl Backend {
         };
 
         res.status() == StatusCode::OK
+    }
+
+    async fn initalize_pool(
+        &mut self,
+        max_connections: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut avalible = VecDeque::new();
+
+        for _ in 0..max_connections {
+            avalible.push_back(TcpStream::connect(format!("{}:{}", self.ipaddr, self.port)).await?)
+        }
+
+        self.tcp_pool = Some(TcpPool::new(
+            Mutex::new(avalible),
+            Mutex::new(HashMap::new()),
+            max_connections,
+        ));
+
+        Ok(())
     }
 }
 
