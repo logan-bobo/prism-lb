@@ -4,6 +4,14 @@ mod tcp_pool;
 use crate::parser::HealthCheck;
 use crate::tcp_pool::TcpPool;
 
+use http_body_util::{BodyExt, Empty, Full};
+use hyper::{
+    body::{Buf, Bytes},
+    Request, Response, StatusCode, Uri,
+};
+use hyper_util::rt::TokioIo;
+use log::{debug, error, info};
+use serde::Deserialize;
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Display,
@@ -13,15 +21,6 @@ use std::{
         Arc,
     },
 };
-
-use http_body_util::{BodyExt, Empty, Full};
-use hyper::{
-    body::{Buf, Bytes},
-    Request, Response, StatusCode, Uri,
-};
-use hyper_util::rt::TokioIo;
-use log::{debug, error, info};
-use serde::Deserialize;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
@@ -349,13 +348,16 @@ impl Backend {
         let mut avalible = VecDeque::new();
 
         for _ in 0..max_connections {
-            avalible.push_back(TcpStream::connect(format!("{}:{}", self.ipaddr, self.port)).await?)
+            avalible.push_back(Arc::new(
+                TcpStream::connect(format!("{}:{}", self.ipaddr, self.port)).await?,
+            ))
         }
 
         self.tcp_pool = Some(TcpPool::new(
             Mutex::new(avalible),
             Mutex::new(HashMap::new()),
             max_connections,
+            0.into(),
         ));
 
         Ok(())
