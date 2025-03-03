@@ -30,7 +30,15 @@ impl TcpPool {
         (self.id_counter.load(Ordering::SeqCst), connection)
     }
 
-    async fn return_connection(connection_id: usize) {
-        todo!()
+    async fn return_connection(&self, connection_id: usize) {
+        let in_use_lock = self.in_use.lock().await;
+
+        let connection = in_use_lock
+            .get(&connection_id)
+            .expect("could not find the connection from the in use pool");
+
+        let mut avaliable_lock = self.available.lock().await;
+
+        avaliable_lock.push_back(connection.clone());
     }
 }

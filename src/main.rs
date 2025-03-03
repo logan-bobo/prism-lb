@@ -46,6 +46,21 @@ async fn main() {
         )))
     });
 
+    for backend in config.backends() {
+        let mut backend = Backend::new(
+            IpAddr::from_str(backend.get("host").expect("invalid host")).expect("invalid host"),
+            u16::from_str(backend.get("port").expect("invalid port")).expect("invalid port"),
+            String::from("/"),
+        );
+
+        backend
+            .initalize_pool(5)
+            .await
+            .expect("could not built TCP pool for backed");
+
+        backends.push(Arc::new(backend));
+    }
+
     info!(
         "starting lb... \nbackends: {:?}\ninterface: {:?}\nport: {:?}",
         backends,

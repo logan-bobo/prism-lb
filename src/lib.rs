@@ -341,7 +341,7 @@ impl Backend {
         res.status() == StatusCode::OK
     }
 
-    async fn initalize_pool(
+    pub async fn initalize_pool(
         &mut self,
         max_connections: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
