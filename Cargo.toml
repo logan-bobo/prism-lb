@@ -15,3 +15,4 @@ serde_yaml = "0.9.34"
 serde = { version = "1.0.217", features = ["derive"]}
 serde_derive = "1.0.217"
 derive-getters = "0.5.0"
+derive-new = "0.5"
