@@ -1,9 +1,10 @@
+pub mod backend;
 pub mod parser;
 
+use crate::backend::Backend;
 use crate::parser::HealthCheck;
 
 use std::{
-    fmt::Display,
     net::IpAddr,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -18,7 +19,6 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use log::{debug, error, info};
-use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
@@ -53,8 +53,8 @@ async fn produce_message_from_stream(
 
     Ok(ForwardMessage {
         path,
-        host: downstream_server.ipaddr,
-        port: downstream_server.port,
+        host: *downstream_server.ipaddr(),
+        port: *downstream_server.port(),
     })
 }
 
@@ -238,11 +238,11 @@ impl Server {
             let is_healthy = { value.is_healthy().await };
 
             if !is_healthy {
-                value.health_failures.fetch_add(1, Ordering::SeqCst);
+                value.increment_health_failure();
             }
 
-            if value.health_failures.load(Ordering::SeqCst)
-                >= *self.health_check.failure_threshold()
+            if value
+                .is_health_failures_larger_than_threshold(*self.health_check.failure_threshold())
             {
                 continue;
             };
@@ -269,75 +269,5 @@ impl Server {
 
             debug!("finished health check");
         }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Backend {
-    ipaddr: IpAddr,
-    port: u16,
-    health_path: String,
-    #[serde(skip_deserializing)]
-    health_failures: AtomicUsize,
-}
-
-impl Backend {
-    pub fn new(ipaddr: IpAddr, port: u16, health_path: String) -> Self {
-        Self {
-            ipaddr,
-            port,
-            health_path,
-            health_failures: AtomicUsize::new(0),
-        }
-    }
-
-    async fn is_healthy(&self) -> bool {
-        let address = format!("{}:{}", self.ipaddr, self.port);
-
-        let uri = Uri::builder()
-            .scheme("http")
-            .authority(address)
-            .path_and_query(self.health_path.clone())
-            .build()
-            .unwrap();
-
-        let stream = match TcpStream::connect(uri.authority().unwrap().to_string()).await {
-            Ok(stream) => stream,
-            Err(_) => return false,
-        };
-
-        let io = TokioIo::new(stream);
-
-        let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
-            Ok((sender, conn)) => (sender, conn),
-            Err(_) => return false,
-        };
-
-        tokio::task::spawn(async move {
-            conn.await?;
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        });
-
-        let req = match Request::builder()
-            .uri(uri.clone())
-            .header(hyper::header::HOST, uri.authority().unwrap().as_str())
-            .body(Empty::<Bytes>::new())
-        {
-            Ok(req) => req,
-            Err(_) => return false,
-        };
-
-        let res = match sender.send_request(req).await {
-            Ok(res) => res,
-            Err(_) => return false,
-        };
-
-        res.status() == StatusCode::OK
-    }
-}
-
-impl Display for Backend {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.ipaddr, self.port)
     }
 }
