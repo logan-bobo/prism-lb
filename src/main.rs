@@ -2,8 +2,9 @@ use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use prism_lb::backend::Backend;
 use prism_lb::parser::Config;
-use prism_lb::{Backend, Server};
+use prism_lb::Server;
 
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
