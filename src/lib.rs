@@ -4,169 +4,44 @@ pub mod parser;
 use crate::backend::Backend;
 use crate::parser::HealthCheck;
 
-use std::{
-    net::IpAddr,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 
-use http_body_util::{BodyExt, Empty, Full};
-use hyper::{
-    body::{Buf, Bytes},
-    Request, Response, StatusCode, Uri,
+use anyhow::Error;
+use hyper::{body::Incoming, service::service_fn, Request, Response, Uri};
+use hyper_util::{
+    client::legacy::{connect::HttpConnector, Client},
+    rt::{TokioExecutor, TokioIo},
 };
-use hyper_util::rt::TokioIo;
-use log::{debug, error, info};
+use log::{error, info};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     sync::RwLock,
     time::{interval, Duration},
 };
 
-#[derive(Debug)]
-struct ForwardMessage {
-    path: String,
-    host: IpAddr,
-    port: u16,
-}
-
-async fn produce_message_from_stream(
-    stream: &mut TcpStream,
+async fn handle_request(
+    mut req: Request<Incoming>,
     downstream_server: Arc<Backend>,
-) -> Result<ForwardMessage, Box<dyn std::error::Error>> {
-    let mut buf_reader = BufReader::new(stream).lines();
-    let read_request_line = buf_reader.next_line().await?;
-
-    let request_line = match read_request_line {
-        Some(value) => value,
-        None => {
-            return Err("TCP stream contained no data".into());
-        }
-    };
-
-    let request: Vec<&str> = request_line.split(" ").collect();
-
-    let path = request[1].to_string();
-
-    Ok(ForwardMessage {
-        path,
-        host: *downstream_server.ipaddr(),
-        port: *downstream_server.port(),
-    })
-}
-
-async fn build_uri_from_message(message: ForwardMessage) -> Result<Uri, hyper::http::Error> {
+) -> Result<Response<Incoming>, Error> {
     let uri = Uri::builder()
         .scheme("http")
-        .authority(format!("{}:{}", message.host, message.port))
-        .path_and_query(message.path)
-        .build();
+        .authority(downstream_server.to_string())
+        .path_and_query(
+            req.uri()
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or("/"),
+        )
+        .build()?;
 
-    debug!("uri constructed: {:?}", uri);
+    *req.uri_mut() = uri;
 
-    uri
-}
+    let client = Client::builder(TokioExecutor::new()).build(HttpConnector::new());
 
-async fn call_downstream_server(uri: Uri) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    info!("calling downstream bakend: {:?}", uri);
-    let host = match uri.host() {
-        Some(value) => value,
-        None => return Err("empty host in URI".into()),
-    };
-
-    let port = match uri.port_u16() {
-        Some(value) => value,
-        None => return Err("empty port in URI".into()),
-    };
-
-    let authority = match uri.authority() {
-        Some(value) => value.clone(),
-        None => return Err("empty authority in URI".into()),
-    };
-
-    let address = format!("{}:{}", host, port);
-
-    let stream = TcpStream::connect(address).await?;
-
-    debug!("tcp connection established to downstream server");
-
-    let io = TokioIo::new(stream);
-
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
-
-    tokio::task::spawn(async move {
-        conn.await?;
-        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-    });
-
-    let req = Request::builder()
-        .uri(uri)
-        .header(hyper::header::HOST, authority.as_str())
-        .body(Empty::<Bytes>::new())?;
-
-    let mut res = sender.send_request(req).await?;
-
-    debug!("downstream request successful");
-
-    let mut response_bytes: Vec<u8> = Vec::new();
-
-    while let Some(next) = res.frame().await {
-        let frame = next?;
-        if let Some(chunk) = frame.data_ref() {
-            chunk.chunk().iter().for_each(|item| {
-                response_bytes.push(*item);
-            });
-        }
-    }
-
-    Ok(response_bytes)
-}
-
-async fn respond_to_client(
-    bytes: Vec<u8>,
-    mut stream: TcpStream,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let response = Response::builder()
-        .version(hyper::Version::HTTP_11)
-        .status(StatusCode::OK)
-        .header("Content-Type", "text/plain")
-        .header("Content-Length", bytes.len())
-        .body(Full::new(Bytes::from(bytes.clone())))?;
-
-    let headers = format!(
-        "HTTP/1.1 {}\r\n{:?}\r\n\r\n",
-        response.status(),
-        response.headers()
-    );
-
-    stream.write_all(headers.as_bytes()).await?;
-    stream
-        .write_all(&response.collect().await?.to_bytes())
-        .await?;
-
-    info!("data written back to client via tcp stream");
-
-    stream.shutdown().await?;
-
-    Ok(())
-}
-
-pub async fn process_stream(
-    mut stream: TcpStream,
-    downstream_server: Arc<Backend>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let message = produce_message_from_stream(&mut stream, downstream_server).await?;
-
-    let uri = build_uri_from_message(message).await?;
-
-    let downstream_response_bytes = call_downstream_server(uri).await?;
-
-    respond_to_client(downstream_response_bytes, stream).await?;
-
-    Ok(())
+    Ok(client.request(req).await?)
 }
 
 #[derive(Debug)]
@@ -191,7 +66,7 @@ impl Server {
         }
     }
 
-    pub async fn serve(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn serve(self: Arc<Self>) -> Result<(), Error> {
         let server_clone = Arc::clone(&self);
         tokio::spawn(async move {
             server_clone
@@ -201,15 +76,30 @@ impl Server {
 
         loop {
             let (stream, _) = self.listener.accept().await?;
-
-            let backend = self.next_server_address().await;
+            let service_server = Arc::clone(&self);
 
             tokio::spawn(async move {
-                if let Err(err) = process_stream(stream, backend).await {
-                    error!("Could not process stream with err: {}", err)
+                let io = TokioIo::new(stream);
+
+                let service = service_fn(move |req| {
+                    let server = service_server.clone();
+                    async move { server.route_request(req).await }
+                });
+
+                if let Err(err) = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await
+                {
+                    error!("error serving connection: {:?}", err);
                 }
             });
         }
+    }
+
+    async fn route_request(&self, req: Request<Incoming>) -> Result<Response<Incoming>, Error> {
+        let backend = self.next_server_address().await;
+        info!("forwaring request to backend {}", backend.to_string());
+        handle_request(req, backend).await
     }
 
     async fn next_server_address(&self) -> Arc<Backend> {
@@ -257,17 +147,13 @@ impl Server {
         let mut interval = interval(interval_duration);
 
         loop {
-            debug!("starting health check");
-
             interval.tick().await;
 
             let healthy_backends = self.backend_health_check().await;
-            debug!("new backend pool {:?}", healthy_backends);
+            info!("new backend pool {:?}", healthy_backends);
 
             let mut backend_write = self.backends.write().await;
             *backend_write = healthy_backends;
-
-            debug!("finished health check");
         }
     }
 }
