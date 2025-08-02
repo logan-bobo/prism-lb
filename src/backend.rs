@@ -1,5 +1,7 @@
 use std::{fmt::Display, net::IpAddr, sync::atomic::AtomicUsize};
 
+use anyhow::Error;
+
 use crate::Ordering;
 
 use derive_getters::Getters;
@@ -60,7 +62,7 @@ impl Backend {
 
         tokio::task::spawn(async move {
             conn.await?;
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            Ok::<(), Error>(())
         });
 
         let req = match Request::builder()
