@@ -1,8 +1,7 @@
-use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use prism_lb::backend::Backend;
+use prism_lb::backend::{Backend, BackendConfig};
 use prism_lb::parser::Config;
 use prism_lb::Server;
 
@@ -40,11 +39,19 @@ async fn main() {
     let mut backends: Vec<Arc<Backend>> = Vec::new();
 
     config.backends().iter().for_each(|backend| {
-        backends.push(Arc::new(Backend::new(
-            IpAddr::from_str(backend.get("host").expect("invalid host")).expect("invalid host"),
+        let backend_config = BackendConfig::new(
+            backend
+                .get("host")
+                .expect("host must be provided in a backend")
+                .to_string(),
             u16::from_str(backend.get("port").expect("invalid port")).expect("invalid port"),
-            String::from("/"),
-        )))
+            backend
+                .get("healthPath")
+                .expect("health path is required for all layer 7 backends")
+                .to_string(),
+        );
+
+        backends.push(Arc::new(Backend::new(backend_config)));
     });
 
     info!(

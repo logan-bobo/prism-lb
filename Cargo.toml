@@ -16,3 +16,4 @@ serde = { version = "1.0.219", features = ["derive"]}
 serde_derive = "1.0.219"
 derive-getters = "0.5.0"
 anyhow = "1.0"
+derive-new = "0.7.0"

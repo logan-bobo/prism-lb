@@ -10,7 +10,14 @@ use std::sync::{
 };
 
 use anyhow::Error;
-use hyper::{body::Incoming, service::service_fn, Request, Response, Uri};
+use http_body_util::combinators::BoxBody;
+use http_body_util::BodyExt;
+use hyper::{
+    body::{Bytes, Incoming},
+    server::conn::http1,
+    service::service_fn,
+    Request, Response, Uri,
+};
 use hyper_util::{
     client::legacy::{connect::HttpConnector, Client},
     rt::{TokioExecutor, TokioIo},
@@ -24,6 +31,7 @@ use tokio::{
 
 async fn handle_request(
     mut req: Request<Incoming>,
+    client: Arc<Client<HttpConnector, BoxBody<Bytes, hyper::Error>>>,
     downstream_server: Arc<Backend>,
 ) -> Result<Response<Incoming>, Error> {
     let uri = Uri::builder()
@@ -39,14 +47,13 @@ async fn handle_request(
 
     *req.uri_mut() = uri;
 
-    let client = Client::builder(TokioExecutor::new()).build(HttpConnector::new());
-
-    Ok(client.request(req).await?)
+    Ok(client.request(req.map(|body| body.boxed())).await?)
 }
 
 #[derive(Debug)]
 pub struct Server {
     listener: TcpListener,
+    client: Arc<Client<HttpConnector, BoxBody<Bytes, hyper::Error>>>,
     backends: Arc<RwLock<Vec<Arc<Backend>>>>,
     count: AtomicUsize,
     health_check: HealthCheck,
@@ -60,6 +67,7 @@ impl Server {
     ) -> Self {
         Self {
             listener,
+            client: spawn_client(),
             backends: Arc::new(RwLock::new(backends)),
             count: AtomicUsize::new(0),
             health_check,
@@ -86,10 +94,7 @@ impl Server {
                     async move { server.route_request(req).await }
                 });
 
-                if let Err(err) = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, service)
-                    .await
-                {
+                if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
                     error!("error serving connection: {:?}", err);
                 }
             });
@@ -98,8 +103,10 @@ impl Server {
 
     async fn route_request(&self, req: Request<Incoming>) -> Result<Response<Incoming>, Error> {
         let backend = self.next_server_address().await;
+        let client = self.client.clone();
+
         info!("forwaring request to backend {}", backend.to_string());
-        handle_request(req, backend).await
+        handle_request(req, client, backend).await
     }
 
     async fn next_server_address(&self) -> Arc<Backend> {
@@ -120,12 +127,26 @@ impl Server {
         self.count.store(0, Ordering::SeqCst);
     }
 
+    async fn health_worker(&self, interval_duration: Duration) {
+        let mut interval = interval(interval_duration);
+
+        loop {
+            interval.tick().await;
+
+            let healthy_backends = self.backend_health_check().await;
+            info!("new backend pool {:?}", healthy_backends);
+
+            let mut backend_write = self.backends.write().await;
+            *backend_write = healthy_backends;
+        }
+    }
+
     async fn backend_health_check(&self) -> Vec<Arc<Backend>> {
         let mut new_healthy_backends = Vec::new();
         let backends_read = self.backends.read().await;
 
         for value in backends_read.iter() {
-            let is_healthy = { value.is_healthy().await };
+            let is_healthy = { value.check_health(self.client.clone()).await.unwrap() };
 
             if !is_healthy {
                 value.increment_health_failure();
@@ -142,18 +163,8 @@ impl Server {
 
         new_healthy_backends
     }
+}
 
-    async fn health_worker(&self, interval_duration: Duration) {
-        let mut interval = interval(interval_duration);
-
-        loop {
-            interval.tick().await;
-
-            let healthy_backends = self.backend_health_check().await;
-            info!("new backend pool {:?}", healthy_backends);
-
-            let mut backend_write = self.backends.write().await;
-            *backend_write = healthy_backends;
-        }
-    }
+pub fn spawn_client() -> Arc<Client<HttpConnector, BoxBody<Bytes, hyper::Error>>> {
+    Arc::new(Client::builder(TokioExecutor::new()).build(HttpConnector::new()))
 }
