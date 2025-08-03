@@ -1,31 +1,44 @@
-use std::{fmt::Display, net::IpAddr, sync::atomic::AtomicUsize};
-
-use anyhow::Error;
+use std::{
+    fmt::Display,
+    sync::{atomic::AtomicUsize, Arc},
+};
 
 use crate::Ordering;
 
+use anyhow::Error;
 use derive_getters::Getters;
+use derive_new::new;
+use http::StatusCode;
+use http_body_util::combinators::BoxBody;
+use http_body_util::BodyExt;
 use http_body_util::Empty;
-use hyper::{body::Bytes, Request, StatusCode, Uri};
-use hyper_util::rt::TokioIo;
-use serde::{Deserialize, Serialize};
-use tokio::net::TcpStream;
+use hyper::{
+    body::{Bytes, Incoming},
+    Method, Request, Uri,
+};
+use hyper_util::{
+    client::legacy::{connect::HttpConnector, Client},
+    rt::TokioExecutor,
+};
+use serde::Deserialize;
 
-#[derive(Serialize, Deserialize, Debug, Getters)]
+#[derive(Debug, Getters)]
 pub struct Backend {
-    ipaddr: IpAddr,
-    port: u16,
-    health_path: String,
-    #[serde(skip_deserializing)]
+    config: BackendConfig,
     health_failures: AtomicUsize,
 }
 
+#[derive(Deserialize, Debug, Getters, new)]
+pub struct BackendConfig {
+    address: String,
+    port: u16,
+    health_path: String,
+}
+
 impl Backend {
-    pub fn new(ipaddr: IpAddr, port: u16, health_path: String) -> Self {
+    pub fn new(config: BackendConfig) -> Self {
         Self {
-            ipaddr,
-            port,
-            health_path,
+            config: config,
             health_failures: AtomicUsize::new(0),
         }
     }
@@ -38,53 +51,41 @@ impl Backend {
         self.health_failures.load(Ordering::SeqCst) >= failure_threshold
     }
 
-    pub async fn is_healthy(&self) -> bool {
-        let address = format!("{}:{}", self.ipaddr, self.port);
-
+    pub async fn check_health(
+        &self,
+        client: Arc<Client<HttpConnector, BoxBody<Bytes, hyper::Error>>>,
+    ) -> Result<bool, Error> {
         let uri = Uri::builder()
             .scheme("http")
-            .authority(address)
-            .path_and_query(self.health_path.clone())
-            .build()
-            .unwrap();
+            .authority(self.to_string())
+            .path_and_query(self.config.health_path.clone())
+            .build()?;
 
-        let stream = match TcpStream::connect(uri.authority().unwrap().to_string()).await {
-            Ok(stream) => stream,
-            Err(_) => return false,
-        };
+        let req = Request::builder().method(Method::GET).uri(uri).body(
+            Empty::<Bytes>::new()
+                .map_err(|never| match never {})
+                .boxed(),
+        )?;
 
-        let io = TokioIo::new(stream);
-
-        let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
-            Ok((sender, conn)) => (sender, conn),
-            Err(_) => return false,
-        };
-
-        tokio::task::spawn(async move {
-            conn.await?;
-            Ok::<(), Error>(())
-        });
-
-        let req = match Request::builder()
-            .uri(uri.clone())
-            .header(hyper::header::HOST, uri.authority().unwrap().as_str())
-            .body(Empty::<Bytes>::new())
-        {
-            Ok(req) => req,
-            Err(_) => return false,
-        };
-
-        let res = match sender.send_request(req).await {
-            Ok(res) => res,
-            Err(_) => return false,
-        };
-
-        res.status() == StatusCode::OK
+        match client.request(req).await {
+            Ok(resp) => {
+                if resp.status() != StatusCode::OK {
+                    return Ok(false);
+                } else {
+                    return Ok(true);
+                }
+            }
+            Err(_) => return Ok(false),
+        }
     }
 }
 
 impl Display for Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.ipaddr, self.port)
+        write!(f, "{}:{}", self.config.address, self.config.port)
     }
+}
+
+pub fn spawn_client() -> Arc<Client<HttpConnector, Incoming>> {
+    Arc::new(Client::builder(TokioExecutor::new()).build(HttpConnector::new()))
 }
