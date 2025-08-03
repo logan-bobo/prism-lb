@@ -111,16 +111,18 @@ impl Server {
 
     async fn next_server_address(&self) -> Arc<Backend> {
         let backend_read = self.backends.read().await;
+        let current_count = self.count.load(Ordering::SeqCst);
 
-        if self.count.load(Ordering::SeqCst) == backend_read.len() {
+        if current_count >= backend_read.len() {
             self.reset_count();
-        };
-
-        let backend = backend_read.get(self.count.load(Ordering::SeqCst)).unwrap();
-
-        self.count.fetch_add(1, Ordering::SeqCst);
-
-        backend.clone()
+            let backend = backend_read.get(0).unwrap();
+            self.count.fetch_add(1, Ordering::SeqCst);
+            backend.clone()
+        } else {
+            let backend = backend_read.get(current_count).unwrap();
+            self.count.fetch_add(1, Ordering::SeqCst);
+            backend.clone()
+        }
     }
 
     fn reset_count(&self) {
@@ -161,6 +163,7 @@ impl Server {
             new_healthy_backends.push(value.clone());
         }
 
+        info!("{:?}", new_healthy_backends);
         new_healthy_backends
     }
 }
