@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod parser;
+pub mod telemetry;
 
 use crate::backend::Backend;
 use crate::parser::HealthCheck;
@@ -22,7 +23,7 @@ use hyper_util::{
     client::legacy::{connect::HttpConnector, Client},
     rt::{TokioExecutor, TokioIo},
 };
-use log::{error, info};
+use tracing::{info_span, Instrument, info, error};
 use tokio::{
     net::TcpListener,
     sync::RwLock,
@@ -77,13 +78,18 @@ impl Server {
     pub async fn serve(self: Arc<Self>) -> Result<(), Error> {
         let server_clone = Arc::clone(&self);
         tokio::spawn(async move {
+            info!(
+                "starting health worker on interval: {}",
+                server_clone.health_check.interval()
+            );
+
             server_clone
                 .health_worker(Duration::new(*server_clone.health_check.interval(), 0))
                 .await;
         });
 
         loop {
-            let (stream, _) = self.listener.accept().await?;
+            let (stream, addr) = self.listener.accept().await?;
             let service_server = Arc::clone(&self);
 
             tokio::spawn(async move {
@@ -91,7 +97,8 @@ impl Server {
 
                 let service = service_fn(move |req| {
                     let server = service_server.clone();
-                    async move { server.route_request(req).await }
+                    let client_addr = addr.to_string();
+                    async move { server.route_request(req, client_addr).await }
                 });
 
                 if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
@@ -101,12 +108,39 @@ impl Server {
         }
     }
 
-    async fn route_request(&self, req: Request<Incoming>) -> Result<Response<Incoming>, Error> {
+    async fn route_request(&self, req: Request<Incoming>, client_addr: String) -> Result<Response<Incoming>, Error> {
+        let method = req.method().to_string();
+        let path = req.uri().path().to_string();
+        let user_agent = req.headers()
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown")
+            .to_string();
+        
         let backend = self.next_server_address().await;
-        let client = self.client.clone();
-
-        info!("forwaring request to backend {}", backend.to_string());
-        handle_request(req, client, backend).await
+        let backend_addr = backend.to_string();
+        
+        async move {
+            let client = self.client.clone();
+            let start = std::time::Instant::now();
+            
+            let result = handle_request(req, client, backend).await;
+            
+            let duration = start.elapsed();
+            let status = result.as_ref()
+                .map(|r| r.status().as_u16())
+                .unwrap_or(500);
+            
+            info!(
+                duration_ms = duration.as_millis(),
+                status = status,
+                "request completed"
+            );
+            
+            result
+        }
+        .instrument(info_span!("request", method = %method, path = %path, user_agent = %user_agent, backend = %backend_addr, client = %client_addr))
+        .await
     }
 
     async fn next_server_address(&self) -> Arc<Backend> {
@@ -136,7 +170,6 @@ impl Server {
             interval.tick().await;
 
             let healthy_backends = self.backend_health_check().await;
-            info!("new backend pool {:?}", healthy_backends);
 
             let mut backend_write = self.backends.write().await;
             *backend_write = healthy_backends;
@@ -157,13 +190,16 @@ impl Server {
             if value
                 .is_health_failures_larger_than_threshold(*self.health_check.failure_threshold())
             {
+                info!(
+                    "backend health failure threshhold met, removing backend from pool: {}",
+                    value.to_string()
+                );
                 continue;
             };
 
             new_healthy_backends.push(value.clone());
         }
 
-        info!("{:?}", new_healthy_backends);
         new_healthy_backends
     }
 }
