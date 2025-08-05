@@ -3,7 +3,7 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
 };
 
-use crate::Ordering;
+use std::sync::atomic::Ordering;
 
 use anyhow::Error;
 use derive_getters::Getters;
@@ -87,5 +87,17 @@ impl Display for Backend {
 }
 
 pub fn spawn_client() -> Arc<Client<HttpConnector, Incoming>> {
-    Arc::new(Client::builder(TokioExecutor::new()).build(HttpConnector::new()))
+    let mut connector = HttpConnector::new();
+    connector.set_keepalive(Some(std::time::Duration::from_secs(60)));
+    connector.set_connect_timeout(Some(std::time::Duration::from_secs(30)));
+    connector.set_happy_eyeballs_timeout(Some(std::time::Duration::from_millis(300)));
+    connector.enforce_http(false);
+    
+    Arc::new(
+        Client::builder(TokioExecutor::new())
+            .pool_idle_timeout(std::time::Duration::from_secs(60))
+            .pool_max_idle_per_host(10)
+            .http1_max_buf_size(8192)
+            .build(connector)
+    )
 }
