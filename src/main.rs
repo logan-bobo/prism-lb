@@ -3,17 +3,22 @@ use std::sync::Arc;
 
 use prism_lb::backend::{Backend, BackendConfig};
 use prism_lb::parser::Config;
+use prism_lb::telemetry::{get_subscriber, init_subscriber};
 use prism_lb::Server;
 
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 
-use log::{error, info};
+use tracing::{error, info};
 
 #[tokio::main]
+#[tracing::instrument]
 async fn main() {
-    env_logger::init();
+    let subscriber = get_subscriber("prism-lb".into(), "info".into(), std::io::stdout);
+    init_subscriber(subscriber);
+
+    info!("building configuration");
 
     let mut file = File::open("backends.yaml")
         .await
@@ -36,6 +41,8 @@ async fn main() {
     .await
     .expect("could not bind to interface/port");
 
+    info!("building backends");
+
     let mut backends: Vec<Arc<Backend>> = Vec::new();
 
     config.backends().iter().for_each(|backend| {
@@ -54,12 +61,7 @@ async fn main() {
         backends.push(Arc::new(Backend::new(backend_config)));
     });
 
-    info!(
-        "starting lb... \nbackends: {:?}\ninterface: {:?}\nport: {:?}",
-        backends,
-        config.bind_interface(),
-        config.bind_port()
-    );
+    info!("starting listener");
 
     let server = Arc::new(Server::new(listener, backends, config.health_check).await);
 
