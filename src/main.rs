@@ -3,18 +3,14 @@ use std::sync::Arc;
 use anyhow::Error;
 use prism_lb::config::Config;
 use prism_lb::server::Server;
-use prism_lb::telemetry::{get_subscriber, init_subscriber};
 
+use log::{error, info};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
-use tracing::{error, info};
-
 #[tokio::main]
-#[tracing::instrument]
 async fn main() -> Result<(), Error> {
-    let subscriber = get_subscriber("prism-lb".into(), "info".into(), std::io::stdout);
-    init_subscriber(subscriber);
+    env_logger::init();
 
     info!("building configuration");
 

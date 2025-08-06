@@ -22,12 +22,12 @@ use hyper_util::{
     client::legacy::{connect::HttpConnector, Client},
     rt::{TokioExecutor, TokioIo},
 };
+use log::{error, info};
 use tokio::{
     net::TcpListener,
-    sync::{RwLock, Semaphore},
+    sync::RwLock,
     time::{interval, Duration},
 };
-use tracing::{error, info, info_span, Instrument};
 
 #[derive(Debug)]
 pub struct Server {
@@ -210,13 +210,11 @@ pub fn spawn_client() -> Arc<Client<HttpConnector, BoxBody<Bytes, hyper::Error>>
     connector.set_keepalive(Some(Duration::from_secs(60)));
     connector.set_connect_timeout(Some(Duration::from_secs(30)));
     connector.set_happy_eyeballs_timeout(Some(Duration::from_millis(300)));
-    connector.enforce_http(false);
-    
+
     Arc::new(
         Client::builder(TokioExecutor::new())
             .pool_idle_timeout(Duration::from_secs(60))
-            .pool_max_idle_per_host(10)
-            .http1_max_buf_size(8192)
-            .build(connector)
+            .pool_max_idle_per_host(200)
+            .build(connector),
     )
 }
