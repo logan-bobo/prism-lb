@@ -12,14 +12,8 @@ use http::StatusCode;
 use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
 use http_body_util::Empty;
-use hyper::{
-    body::{Bytes, Incoming},
-    Method, Request, Uri,
-};
-use hyper_util::{
-    client::legacy::{connect::HttpConnector, Client},
-    rt::TokioExecutor,
-};
+use hyper::{body::Bytes, Method, Request, Uri};
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use serde::Deserialize;
 
 #[derive(Debug, Getters)]
@@ -38,7 +32,7 @@ pub struct BackendConfig {
 impl Backend {
     pub fn new(config: BackendConfig) -> Self {
         Self {
-            config: config,
+            config,
             health_failures: AtomicUsize::new(0),
         }
     }
@@ -86,18 +80,68 @@ impl Display for Backend {
     }
 }
 
-pub fn spawn_client() -> Arc<Client<HttpConnector, Incoming>> {
-    let mut connector = HttpConnector::new();
-    connector.set_keepalive(Some(std::time::Duration::from_secs(60)));
-    connector.set_connect_timeout(Some(std::time::Duration::from_secs(30)));
-    connector.set_happy_eyeballs_timeout(Some(std::time::Duration::from_millis(300)));
-    connector.enforce_http(false);
-    
-    Arc::new(
-        Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(std::time::Duration::from_secs(60))
-            .pool_max_idle_per_host(10)
-            .http1_max_buf_size(8192)
-            .build(connector)
-    )
+#[cfg(test)]
+mod tests {
+    use super::{Backend, BackendConfig};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn test_backend_constructor_with_domain() {
+        let backend_config = BackendConfig::new("example.com".to_string(), 80, "/".to_string());
+        let backend = Backend::new(backend_config);
+
+        assert_eq!(backend.config.address(), "example.com");
+        assert_eq!(backend.config.port(), &80);
+        assert_eq!(backend.config.health_path(), "/");
+    }
+
+    #[test]
+    fn test_backend_display() {
+        let backend_config = BackendConfig::new("example.com".to_string(), 80, "/".to_string());
+        let backend = Backend::new(backend_config);
+
+        // this test is important baceause to string is used to build the authority in URIs
+        assert_eq!(backend.to_string(), "example.com:80");
+    }
+
+    #[test]
+    fn test_backend_increment_health_failure() {
+        let backend_config = BackendConfig::new("example.com".to_string(), 80, "/".to_string());
+        let backend = Backend::new(backend_config);
+
+        backend.increment_health_failure();
+
+        let atomic = AtomicUsize::new(1);
+
+        let actual = backend.health_failures.load(Ordering::SeqCst);
+        let exepected = atomic.load(Ordering::SeqCst);
+
+        assert_eq!(exepected, actual);
+    }
+
+    #[test]
+    fn test_backend_failure_threshold_true() {
+        let backend_config = BackendConfig::new("example.com".to_string(), 80, "/".to_string());
+        let backend = Backend::new(backend_config);
+
+        backend.increment_health_failure();
+        backend.increment_health_failure();
+
+        let expected = backend.is_health_failures_larger_than_threshold(1);
+
+        assert!(expected)
+    }
+
+    #[test]
+    fn test_backend_failure_threshold_false() {
+        let backend_config = BackendConfig::new("example.com".to_string(), 80, "/".to_string());
+        let backend = Backend::new(backend_config);
+
+        backend.increment_health_failure();
+        backend.increment_health_failure();
+
+        let expected = backend.is_health_failures_larger_than_threshold(5);
+
+        assert!(!expected)
+    }
 }

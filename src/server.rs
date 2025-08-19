@@ -1,4 +1,4 @@
-use crate::backend::{Backend, BackendConfig};
+use crate::backend::{self, Backend, BackendConfig};
 use crate::config::{Config, HealthCheck};
 
 use std::{
@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Error};
+use derive_getters::Getters;
 use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
 use hyper::{
@@ -29,11 +30,12 @@ use tokio::{
     time::{interval, Duration},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Getters)]
 pub struct Server {
     listener: TcpListener,
     client: Arc<Client<HttpConnector, BoxBody<Bytes, hyper::Error>>>,
     backends: Arc<RwLock<Vec<Arc<Backend>>>>,
+    // TODO: rename this as its confusing now...
     count: AtomicUsize,
     health_check: HealthCheck,
 }
@@ -148,20 +150,10 @@ impl Server {
         let backend_read = self.backends.read().await;
         let current_count = self.count.load(Ordering::SeqCst);
 
-        if current_count >= backend_read.len() {
-            self.reset_count();
-            let backend = backend_read.get(0).unwrap();
-            self.count.fetch_add(1, Ordering::SeqCst);
-            backend.clone()
-        } else {
-            let backend = backend_read.get(current_count).unwrap();
-            self.count.fetch_add(1, Ordering::SeqCst);
-            backend.clone()
-        }
-    }
-
-    fn reset_count(&self) {
-        self.count.store(0, Ordering::SeqCst);
+        let index = current_count % backend_read.len();
+        let backend = backend_read.get(index).unwrap();
+        self.count().fetch_add(1, Ordering::SeqCst);
+        backend.clone()
     }
 
     async fn health_worker(&self, interval_duration: Duration) {
