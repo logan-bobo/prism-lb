@@ -1,0 +1,13 @@
+---
+bindInterface: "0.0.0.0"
+bindPort: 0
+backends:
+  - host: "127.0.0.1"
+    port: 5002
+    healthPath: "/"
+  - host: "127.0.0.1"
+    port: 5003
+    healthPath: "/"
+healthCheck:
+  interval: 60
+  failureThreshold: 3

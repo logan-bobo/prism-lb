@@ -32,7 +32,7 @@ pub struct BackendConfig {
 impl Backend {
     pub fn new(config: BackendConfig) -> Self {
         Self {
-            config: config,
+            config,
             health_failures: AtomicUsize::new(0),
         }
     }

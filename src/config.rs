@@ -1,9 +1,9 @@
 use std::{collections::HashMap, net::IpAddr};
 
 use derive_getters::Getters;
-use serde_derive::{Deserialize, Serialize};
+use serde_derive::Deserialize;
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Getters)]
+#[derive(Debug, Deserialize, Getters)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     bind_interface: IpAddr,
@@ -12,7 +12,7 @@ pub struct Config {
     pub health_check: HealthCheck,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Getters)]
+#[derive(Debug, Deserialize, Getters)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthCheck {
     pub interval: u64,
