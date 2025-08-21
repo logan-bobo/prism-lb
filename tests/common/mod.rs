@@ -13,14 +13,46 @@ use prism_lb::{config::Config, server::Server};
 
 const NGINX_IMAGE: &str = "nginx:latest";
 
-pub async fn run_test_containers() {
+pub struct TestContainers {
+    docker: Docker,
+    container_names: Vec<String>,
+}
+
+impl Drop for TestContainers {
+    fn drop(&mut self) {
+        let docker = self.docker.clone();
+        let names = self.container_names.clone();
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                for name in &names {
+                    docker
+                        .remove_container(
+                            &name,
+                            Some(bollard::query_parameters::RemoveContainerOptionsBuilder::default()
+                                .force(true)
+                                .build()),
+                        )
+                        .await
+                        .unwrap();
+                }
+            });
+        }).join().unwrap();
+    }
+}
+
+pub async fn run_test_containers() -> TestContainers {
     let docker = Docker::connect_with_socket_defaults().unwrap();
 
-    let nginx_one = build_container_config("5001".to_string());
-    let nginx_two = build_container_config("5002".to_string());
-    let nginx_three = build_container_config("5003".to_string());
+    // TODO: make all of this random! dynamic ports!
+    // for now this is fine just to validate initial test cases
+    let nginx_one = build_container_config("5001".to_string(), 0);
+    let nginx_two = build_container_config("5002".to_string(), 1);
+    let nginx_three = build_container_config("5003".to_string(), 2);
 
     let test_containers = vec![nginx_one, nginx_two, nginx_three];
+    let mut running_container_names = Vec::<String>::new();
 
     let _ = &docker
         .create_image(
@@ -58,10 +90,17 @@ pub async fn run_test_containers() {
             )
             .await
             .unwrap();
+
+        running_container_names.push(container_name);
+    }
+
+    TestContainers {
+        docker,
+        container_names: running_container_names,
     }
 }
 
-fn build_container_config(host_port: String) -> ContainerCreateBody {
+fn build_container_config(host_port: String, instance_id: usize) -> ContainerCreateBody {
     let mut nginx_bindings = HashMap::<String, Option<Vec<PortBinding>>>::new();
     nginx_bindings.insert(
         String::from("80/tcp"),
@@ -77,6 +116,11 @@ fn build_container_config(host_port: String) -> ContainerCreateBody {
             port_bindings: Some(nginx_bindings),
             ..Default::default()
         }),
+        cmd: Some(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            format!("echo '<p>instance-{}</p>' > /usr/share/nginx/html/index.html && nginx -g 'daemon off;'", instance_id)
+        ]),
         ..Default::default()
     }
 }

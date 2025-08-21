@@ -1,4 +1,4 @@
-use crate::backend::{self, Backend, BackendConfig};
+use crate::backend::{Backend, BackendConfig};
 use crate::config::{Config, HealthCheck};
 
 use std::{
@@ -152,7 +152,9 @@ impl Server {
 
         let index = current_count % backend_read.len();
         let backend = backend_read.get(index).unwrap();
-        self.count().fetch_add(1, Ordering::SeqCst);
+        
+        
+        self.count.fetch_add(1, Ordering::SeqCst);
         backend.clone()
     }
 
