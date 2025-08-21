@@ -6,8 +6,8 @@ use common::{run_test_containers, test_server};
 use http::StatusCode;
 
 #[tokio::test]
-async fn test_backends() {
-    run_test_containers().await;
+async fn test_backend_routing() {
+    let _containers = run_test_containers().await;
     let server = test_server().await;
     let server_clone = server.clone();
     let port = server.listener().local_addr().unwrap().port();
@@ -28,6 +28,8 @@ async fn test_backends() {
             .unwrap();
 
         assert_eq!(result.status(), StatusCode::OK);
+
+        assert!(result.text().await.unwrap().contains(&i.to_string()));
 
         assert_eq!(actual, exepected);
     }

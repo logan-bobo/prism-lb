@@ -3,6 +3,9 @@ bindInterface: "0.0.0.0"
 bindPort: 0
 backends:
   - host: "127.0.0.1"
+    port: 5001
+    healthPath: "/"
+  - host: "127.0.0.1"
     port: 5002
     healthPath: "/"
   - host: "127.0.0.1"
