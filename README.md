@@ -1,4 +1,4 @@
-# prism-lb
+# Prism LB
 
 A simple layer 7 load balancer written in Rust providing the following functionality.
 
