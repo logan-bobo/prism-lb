@@ -1,0 +1,12 @@
+services:
+  lb:
+    image: "prism-lb:latest"
+    ports:
+      - "5001:5001"
+    volumes:
+      - "${PWD}/example-backends.yaml:/app/backends.yaml"
+  target:
+    image: "nginx:latest"
+    deploy:
+      mode: replicated
+      replicas: 3
