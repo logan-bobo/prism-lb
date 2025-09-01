@@ -72,7 +72,11 @@ impl Server {
                     .ok_or_else(|| anyhow!("Backend '{}' missing healthPath", host))?
                     .to_string();
 
-                let backend_config = BackendConfig::new(host, port, health_path);
+                let scheme = backend
+                    .get("scheme")
+                    .map_or("http".to_string(), |v| v.to_string());
+
+                let backend_config = BackendConfig::new(host, port, health_path, scheme);
                 Ok(Arc::new(Backend::new(backend_config)))
             })
             .collect::<Result<Vec<Arc<Backend>>, Error>>()?;
@@ -124,7 +128,7 @@ impl Server {
         downstream_server: Arc<Backend>,
     ) -> Result<Response<Incoming>, Error> {
         let uri = Uri::builder()
-            .scheme("http")
+            .scheme(downstream_server.config().scheme().as_str())
             .authority(downstream_server.to_string())
             .path_and_query(
                 req.uri()
@@ -152,8 +156,7 @@ impl Server {
 
         let index = current_count % backend_read.len();
         let backend = backend_read.get(index).unwrap();
-        
-        
+
         self.count.fetch_add(1, Ordering::SeqCst);
         backend.clone()
     }

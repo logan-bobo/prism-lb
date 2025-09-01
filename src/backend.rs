@@ -27,6 +27,7 @@ pub struct BackendConfig {
     address: String,
     port: u16,
     health_path: String,
+    scheme: String,
 }
 
 impl Backend {
@@ -87,7 +88,12 @@ mod tests {
 
     #[test]
     fn test_backend_constructor_with_domain() {
-        let backend_config = BackendConfig::new("example.com".to_string(), 80, "/".to_string());
+        let backend_config = BackendConfig::new(
+            "example.com".to_string(),
+            80,
+            "/".to_string(),
+            "http".to_string(),
+        );
         let backend = Backend::new(backend_config);
 
         assert_eq!(backend.config.address(), "example.com");
@@ -97,16 +103,25 @@ mod tests {
 
     #[test]
     fn test_backend_display() {
-        let backend_config = BackendConfig::new("example.com".to_string(), 80, "/".to_string());
+        let backend_config = BackendConfig::new(
+            "example.com".to_string(),
+            80,
+            "/".to_string(),
+            "http".into(),
+        );
         let backend = Backend::new(backend_config);
 
-        // this test is important baceause to string is used to build the authority in URIs
         assert_eq!(backend.to_string(), "example.com:80");
     }
 
     #[test]
     fn test_backend_increment_health_failure() {
-        let backend_config = BackendConfig::new("example.com".to_string(), 80, "/".to_string());
+        let backend_config = BackendConfig::new(
+            "example.com".to_string(),
+            80,
+            "/".to_string(),
+            "http".into(),
+        );
         let backend = Backend::new(backend_config);
 
         backend.increment_health_failure();
@@ -121,7 +136,12 @@ mod tests {
 
     #[test]
     fn test_backend_failure_threshold_true() {
-        let backend_config = BackendConfig::new("example.com".to_string(), 80, "/".to_string());
+        let backend_config = BackendConfig::new(
+            "example.com".to_string(),
+            80,
+            "/".to_string(),
+            "http".into(),
+        );
         let backend = Backend::new(backend_config);
 
         backend.increment_health_failure();
@@ -134,7 +154,12 @@ mod tests {
 
     #[test]
     fn test_backend_failure_threshold_false() {
-        let backend_config = BackendConfig::new("example.com".to_string(), 80, "/".to_string());
+        let backend_config = BackendConfig::new(
+            "example.com".to_string(),
+            80,
+            "/".to_string(),
+            "http".to_string(),
+        );
         let backend = Backend::new(backend_config);
 
         backend.increment_health_failure();

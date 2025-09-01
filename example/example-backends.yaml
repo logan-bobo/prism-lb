@@ -1,16 +1,20 @@
 ---
 bindInterface: "0.0.0.0"
 bindPort: 5001
+scheme: http
 backends:
   - host: example-target-1
     port: 80
     healthPath: "/"
+    scheme: http
   - host: example-target-2
     port: 80
     healthPath: "/"
+    scheme: http
   - host: example-target-3
     port: 80
     healthPath: "/"
+    scheme: http
 healthCheck:
   interval: 60
   failureThreshold: 3
