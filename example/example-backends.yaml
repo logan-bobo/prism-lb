@@ -14,3 +14,4 @@ backends:
 healthCheck:
   interval: 60
   failureThreshold: 3
+  healthyThreshold: 3

@@ -1,25 +1,25 @@
-use std::{
-    fmt::Display,
-    sync::{atomic::AtomicUsize, Arc},
-};
-
-use std::sync::atomic::Ordering;
-
 use anyhow::Error;
 use derive_getters::Getters;
 use derive_new::new;
 use http::StatusCode;
-use http_body_util::combinators::BoxBody;
-use http_body_util::BodyExt;
-use http_body_util::Empty;
-use hyper::{body::Bytes, Method, Request, Uri};
-use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use http_body_util::{BodyExt, Empty, combinators::BoxBody};
+use hyper::{Method, Request, Uri, body::Bytes};
+use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use serde::Deserialize;
+use std::{
+    fmt::Display,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+};
 
 #[derive(Debug, Getters)]
 pub struct Backend {
     config: BackendConfig,
     health_failures: AtomicUsize,
+    health_success: AtomicUsize,
+    routable: AtomicBool,
 }
 
 #[derive(Deserialize, Debug, Getters, new)]
@@ -34,14 +34,40 @@ impl Backend {
         Self {
             config,
             health_failures: AtomicUsize::new(0),
+            health_success: AtomicUsize::new(0),
+            routable: AtomicBool::new(false),
         }
+    }
+
+    pub fn is_healthy(&self) -> bool {
+        self.routable.load(Ordering::SeqCst)
+    }
+
+    pub fn mark_routable(&self) {
+        self.routable.store(true, Ordering::SeqCst);
+    }
+
+    pub fn health_success_larger_than_threshold(&self, success_threashold: usize) -> bool {
+        self.health_success.load(Ordering::SeqCst) >= success_threashold
+    }
+
+    pub fn incremenet_health_success(&self) {
+        self.health_success.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn zero_health(&self) {
+        self.health_success.store(0, Ordering::SeqCst);
+    }
+
+    pub fn mark_none_routable(&self) {
+        self.routable.store(false, Ordering::SeqCst);
     }
 
     pub fn increment_health_failure(&self) {
         self.health_failures.fetch_add(1, Ordering::SeqCst);
     }
 
-    pub fn is_health_failures_larger_than_threshold(&self, failure_threshold: usize) -> bool {
+    pub fn health_failures_larger_than_threshold(&self, failure_threshold: usize) -> bool {
         self.health_failures.load(Ordering::SeqCst) >= failure_threshold
     }
 
@@ -100,7 +126,8 @@ mod tests {
         let backend_config = BackendConfig::new("example.com".to_string(), 80, "/".to_string());
         let backend = Backend::new(backend_config);
 
-        // this test is important baceause to string is used to build the authority in URIs
+        // this test is important baceause to string is used to build the authority in
+        // URIs
         assert_eq!(backend.to_string(), "example.com:80");
     }
 
@@ -127,7 +154,7 @@ mod tests {
         backend.increment_health_failure();
         backend.increment_health_failure();
 
-        let expected = backend.is_health_failures_larger_than_threshold(1);
+        let expected = backend.health_failures_larger_than_threshold(1);
 
         assert!(expected)
     }
@@ -140,7 +167,7 @@ mod tests {
         backend.increment_health_failure();
         backend.increment_health_failure();
 
-        let expected = backend.is_health_failures_larger_than_threshold(5);
+        let expected = backend.health_failures_larger_than_threshold(5);
 
         assert!(!expected)
     }

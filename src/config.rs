@@ -1,7 +1,6 @@
-use std::{collections::HashMap, net::IpAddr};
-
 use derive_getters::Getters;
 use serde_derive::Deserialize;
+use std::{collections::HashMap, net::IpAddr};
 
 #[derive(Debug, Deserialize, Getters)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +16,7 @@ pub struct Config {
 pub struct HealthCheck {
     pub interval: u64,
     failure_threshold: usize,
+    healthy_threshold: usize,
 }
 
 impl TryFrom<String> for Config {

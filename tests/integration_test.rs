@@ -1,9 +1,10 @@
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use common::{run_test_containers, test_server};
+use core::time;
 use http::StatusCode;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::time::sleep;
 
 #[tokio::test]
 async fn test_backend_routing() {
@@ -15,8 +16,11 @@ async fn test_backend_routing() {
 
     tokio::spawn(async move { server.serve().await.unwrap() });
 
+    // TODO: wait for all backends to become healthy
+    sleep(time::Duration::from_secs(5)).await;
+
     for i in 0..3 {
-        let actual = server_clone.count().load(Ordering::SeqCst);
+        let actual = server_clone.routing_counter().load(Ordering::SeqCst);
         let atomic = AtomicUsize::new(i);
 
         let exepected = atomic.load(Ordering::SeqCst);

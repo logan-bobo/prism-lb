@@ -1,18 +1,10 @@
-use crate::backend::{Backend, BackendConfig};
-use crate::config::{Config, HealthCheck};
-
-use std::{
-    str::FromStr,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+use crate::{
+    backend::{Backend, BackendConfig},
+    config::{Config, HealthCheck},
 };
-
 use anyhow::{anyhow, Context, Error};
 use derive_getters::Getters;
-use http_body_util::combinators::BoxBody;
-use http_body_util::BodyExt;
+use http_body_util::{combinators::BoxBody, BodyExt};
 use hyper::{
     body::{Bytes, Incoming},
     server::conn::http1,
@@ -24,9 +16,15 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
 };
 use log::{error, info};
+use std::{
+    str::FromStr,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 use tokio::{
     net::TcpListener,
-    sync::RwLock,
     time::{interval, Duration},
 };
 
@@ -34,9 +32,8 @@ use tokio::{
 pub struct Server {
     listener: TcpListener,
     client: Arc<Client<HttpConnector, BoxBody<Bytes, hyper::Error>>>,
-    backends: Arc<RwLock<Vec<Arc<Backend>>>>,
-    // TODO: rename this as its confusing now...
-    count: AtomicUsize,
+    backends: Arc<Vec<Backend>>,
+    routing_counter: AtomicUsize,
     health_check: HealthCheck,
 }
 
@@ -73,15 +70,15 @@ impl Server {
                     .to_string();
 
                 let backend_config = BackendConfig::new(host, port, health_path);
-                Ok(Arc::new(Backend::new(backend_config)))
+                Ok(Backend::new(backend_config))
             })
-            .collect::<Result<Vec<Arc<Backend>>, Error>>()?;
+            .collect::<Result<Vec<Backend>, Error>>()?;
 
         Ok(Self {
             listener,
             client: spawn_client(),
-            backends: Arc::new(RwLock::new(backends)),
-            count: AtomicUsize::new(0),
+            backends: Arc::new(backends),
+            routing_counter: AtomicUsize::new(0),
             health_check: config.health_check,
         })
     }
@@ -121,7 +118,7 @@ impl Server {
     async fn handle_request(
         &self,
         mut req: Request<Incoming>,
-        downstream_server: Arc<Backend>,
+        downstream_server: &Backend,
     ) -> Result<Response<Incoming>, Error> {
         let uri = Uri::builder()
             .scheme("http")
@@ -140,22 +137,33 @@ impl Server {
     }
 
     async fn route_request(&self, req: Request<Incoming>) -> Result<Response<Incoming>, Error> {
-        let backend = self.next_server_address().await;
+        let backend = self
+            .next_routable_backend()
+            .await
+            .context("no routable backend found in bool")?;
 
         info!("forwaring request to backend {}", backend.to_string());
         self.handle_request(req, backend).await
     }
 
-    async fn next_server_address(&self) -> Arc<Backend> {
-        let backend_read = self.backends.read().await;
-        let current_count = self.count.load(Ordering::SeqCst);
+    async fn next_routable_backend(&self) -> Option<&Backend> {
+        for _ in 0..self.backends.len() {
+            let current_count = self.routing_counter.load(Ordering::SeqCst);
+            let index = current_count % self.backends.len();
 
-        let index = current_count % backend_read.len();
-        let backend = backend_read.get(index).unwrap();
-        
-        
-        self.count.fetch_add(1, Ordering::SeqCst);
-        backend.clone()
+            // TODO: What if the backend does not exist???
+            let backend = self.backends.get(index).unwrap();
+
+            self.routing_counter.fetch_add(1, Ordering::SeqCst);
+
+            if backend.is_healthy() {
+                return Some(backend);
+            } else {
+                continue;
+            }
+        }
+
+        None
     }
 
     async fn health_worker(&self, interval_duration: Duration) {
@@ -163,39 +171,40 @@ impl Server {
 
         loop {
             interval.tick().await;
-
-            let healthy_backends = self.backend_health_check().await;
-
-            let mut backend_write = self.backends.write().await;
-            *backend_write = healthy_backends;
+            self.backend_health_check().await;
         }
     }
 
-    async fn backend_health_check(&self) -> Vec<Arc<Backend>> {
-        let mut new_healthy_backends = Vec::new();
-        let backends_read = self.backends.read().await;
-
-        for value in backends_read.iter() {
-            let is_healthy = { value.check_health(self.client.clone()).await.unwrap() };
+    async fn backend_health_check(&self) {
+        for backend in self.backends.iter() {
+            let is_healthy = { backend.check_health(self.client.clone()).await.unwrap() };
 
             if !is_healthy {
-                value.increment_health_failure();
+                backend.zero_health();
+                backend.increment_health_failure();
+            } else {
+                backend.incremenet_health_success();
             }
 
-            if value
-                .is_health_failures_larger_than_threshold(*self.health_check.failure_threshold())
+            if backend.health_failures_larger_than_threshold(*self.health_check.failure_threshold())
             {
                 info!(
                     "backend health failure threshhold met, removing backend from pool: {}",
-                    value.to_string()
+                    backend.to_string()
                 );
+                backend.mark_none_routable();
                 continue;
             };
 
-            new_healthy_backends.push(value.clone());
+            if backend.health_success_larger_than_threshold(*self.health_check.healthy_threshold())
+            {
+                info!(
+                    "backend health threshhold met, adding backend to pool: {}",
+                    backend.to_string()
+                );
+                backend.mark_routable();
+            }
         }
-
-        new_healthy_backends
     }
 }
 

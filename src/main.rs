@@ -1,15 +1,15 @@
-use std::sync::Arc;
-
 use anyhow::Error;
-use prism_lb::config::Config;
-use prism_lb::server::Server;
-
 use log::{error, info};
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
+use prism_lb::{config::Config, server::Server};
+use std::sync::Arc;
+use tokio::{fs::File, io::AsyncReadExt};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    if std::env::var_os("RUST_LOG").is_none() {
+        std::env::set_var("RUST_LOG", "debug");
+    }
+
     env_logger::init();
 
     info!("building configuration");

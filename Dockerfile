@@ -1,4 +1,4 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1.88.0 as chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.95.0 as chef
 
 WORKDIR /app
 
@@ -25,10 +25,10 @@ FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
 RUN apt-get update -y \
-    && apt-get install -y --no-install-recommends openssl ca-certificates \
-    && apt-get autoremove -y \
-    && apt-get clean -y \
-    && rm -rf /var/lib/apt/lists/*
+	&& apt-get install -y --no-install-recommends openssl ca-certificates \
+	&& apt-get autoremove -y \
+	&& apt-get clean -y \
+	&& rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/prism-lb prism-lb
 

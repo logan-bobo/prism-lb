@@ -12,7 +12,7 @@ The following serves as an example of running and configuring `prism-lb`.
 1. Build the container locally in the root directory (This will soon be added to docker hub).
 
 ```bash
-$ docker build -t prism-lb:latest
+$ docker build -t prism-lb:latest .
 ```
 
 2. Move to the example directory and execute the following.
