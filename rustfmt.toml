@@ -1,0 +1,15 @@
+# Align with your project's edition (must match Cargo.toml)
+edition = "2024"
+
+# Set the maximum line width to 100 characters instead of the default 100
+max_width = 100
+
+# Automatically organize and format use statements
+imports_granularity = "Crate"
+group_imports = "One"
+
+# Format code inside doc comments
+format_code_in_doc_comments = true
+
+# Wrap comments and force better multiline formatting
+wrap_comments = true

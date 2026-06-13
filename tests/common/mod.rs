@@ -1,15 +1,11 @@
-use std::sync::Arc;
-
-use tokio::{fs::File, io::AsyncReadExt};
-
 use bollard::{
     secret::{ContainerCreateBody, HostConfig, PortBinding},
     Docker,
 };
 use futures_util::stream::TryStreamExt;
-use std::collections::HashMap;
-
 use prism_lb::{config::Config, server::Server};
+use std::{collections::HashMap, sync::Arc};
+use tokio::{fs::File, io::AsyncReadExt};
 
 const NGINX_IMAGE: &str = "nginx:latest";
 
@@ -30,15 +26,19 @@ impl Drop for TestContainers {
                     docker
                         .remove_container(
                             &name,
-                            Some(bollard::query_parameters::RemoveContainerOptionsBuilder::default()
-                                .force(true)
-                                .build()),
+                            Some(
+                                bollard::query_parameters::RemoveContainerOptionsBuilder::default()
+                                    .force(true)
+                                    .build(),
+                            ),
                         )
                         .await
                         .unwrap();
                 }
             });
-        }).join().unwrap();
+        })
+        .join()
+        .unwrap();
     }
 }
 

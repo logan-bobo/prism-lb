@@ -12,5 +12,7 @@ backends:
     port: 5003
     healthPath: "/"
 healthCheck:
-  interval: 60
+  interval: 3
   failureThreshold: 3
+  healthyThreshold: 0
+
